@@ -14,8 +14,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Cockpit</title>
     <meta name="description" content="An intuitive and customizable cross-platform ground control station for remote vehicles of all types.">
-  <script type="module" crossorigin src="./index-BEC_1CxR.js"></script>
-  <link rel="stylesheet" crossorigin href="./style-B3k0tFOe.css">
+  <script type="module" crossorigin src="./index-DY4mzXSe.js"></script>
+  <link rel="stylesheet" crossorigin href="./style-DUtm-8zl.css">
 <link rel="manifest" href="./manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script></head>
 
 <body>
@@ -57,6 +57,11 @@
 
             clearSettingsButton.addEventListener('click', function() {
                 localStorage.clear();
+                // We are also going to clear the cache to ensure a fresh access to all files as well
+                if (caches) {
+                    const keys = await caches.keys();
+                    await Promise.allSettled(keys.map((key) => caches.delete(key)));
+                }
                 location.reload();
             });
         })
