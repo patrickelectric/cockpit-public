@@ -7,6 +7,9 @@ on:
   schedule:
   # Run every 6 days to help us stay on our toes
   - cron: '0 0 */6 * *'
+  # Required for write permission in a PR
+  pull_request_target:
+    branches: ["master"]
 
 permissions:
   id-token: write
