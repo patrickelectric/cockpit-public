@@ -41,7 +41,7 @@ export class WebRTCManager {
   private connected = ref(false)
   private consumerId: string | undefined
   private streamName: string | undefined
-  private session: Session | undefined
+  public session: Session | undefined
   private rtcConfiguration: RTCConfiguration
   private selectedICEIPs: string[] = []
   private selectedICEProtocols: string[] = []
@@ -165,7 +165,6 @@ export class WebRTCManager {
    * @param {string} newStatus
    */
   private updateStreamStatus(newStatus: string): void {
-    console.debug(`[WebRTC] Stream status updated from "${this.streamStatus.value}" to "${newStatus}"`)
     const time = new Date().toTimeString().split(' ').first()
     this.streamStatus.value = `${newStatus} (${time})`
   }
@@ -175,7 +174,6 @@ export class WebRTCManager {
    * @param {string} newStatus
    */
   private updateSignallerStatus(newStatus: string): void {
-    console.debug(`[WebRTC] Signaller status updated from "${this.signallerStatus.value}" to "${newStatus}"`)
     const time = new Date().toTimeString().split(' ').first()
     this.signallerStatus.value = `${newStatus} (${time})`
   }

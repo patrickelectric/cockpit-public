@@ -1,5 +1,6 @@
 <template>
   <div ref="videoWidget" class="video-widget">
+    <statsForNerds v-if="widget.options.statsForNerds" :stream-name="externalStreamId" />
     <div v-if="nameSelectedStream === undefined" class="no-video-alert">
       <span>No video stream selected.</span>
     </div>
@@ -24,11 +25,17 @@
       <div class="no-video-alert">
         <p>
           <span class="text-xl font-bold">Server status: </span>
-          <span>{{ serverStatus }}</span>
+          <span v-for="(statusParagraph, i) in serverStatus.toString().split('\\n')" :key="i">
+            {{ statusParagraph }}
+            <br />
+          </span>
         </p>
         <p>
           <span class="text-xl font-bold">Stream status: </span>
-          <span>{{ streamStatus }}</span>
+          <span v-for="(statusParagraph, i) in streamStatus.toString().split('\\n')" :key="i">
+            {{ statusParagraph }}
+            <br />
+          </span>
         </p>
       </div>
     </div>
@@ -39,10 +46,10 @@
       Your browser does not support the video tag.
     </video>
   </div>
-  <v-dialog v-model="widget.managerVars.configMenuOpen" width="auto">
-    <v-card class="pa-2">
-      <v-card-title>Video widget config</v-card-title>
-      <v-card-text>
+  <v-dialog v-model="widgetStore.widgetManagerVars(widget.hash).configMenuOpen" width="auto">
+    <v-card class="pa-4 text-white" style="border-radius: 15px" :style="interfaceStore.globalGlassMenuStyles">
+      <v-card-title class="text-center">Video widget config</v-card-title>
+      <v-card-text class="flex flex-col gap-y-4">
         <v-select
           v-model="nameSelectedStream"
           label="Stream name"
@@ -67,19 +74,26 @@
           hide-details
           return-object
         />
-        <v-banner-text>Saved stream name: "{{ widget.options.streamName }}"</v-banner-text>
+        <v-banner-text>Saved stream name: "{{ widget.options.internalStreamName }}"</v-banner-text>
         <v-switch
           v-model="widget.options.flipHorizontally"
           class="my-1"
           label="Flip horizontally"
-          :color="widget.options.flipHorizontally ? 'rgb(0, 20, 80)' : undefined"
+          :color="widget.options.flipHorizontally ? 'white' : undefined"
           hide-details
         />
         <v-switch
           v-model="widget.options.flipVertically"
           class="my-1"
           label="Flip vertically"
-          :color="widget.options.flipVertically ? 'rgb(0, 20, 80)' : undefined"
+          :color="widget.options.flipVertically ? 'white' : undefined"
+          hide-details
+        />
+        <v-switch
+          v-model="widget.options.statsForNerds"
+          class="my-1"
+          label="Stats for nerds"
+          :color="widget.options.statsForNerds ? 'white' : undefined"
           hide-details
         />
         <div class="flex-wrap justify-center d-flex ga-5">
@@ -93,15 +107,20 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import Swal from 'sweetalert2'
 import { computed, onBeforeMount, onBeforeUnmount, ref, toRefs, watch } from 'vue'
 
+import StatsForNerds from '@/components/VideoPlayerStatsForNerds.vue'
 import { isEqual } from '@/libs/utils'
+import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useVideoStore } from '@/stores/video'
+import { useWidgetManagerStore } from '@/stores/widgetManager'
 import type { Widget } from '@/types/widgets'
+const interfaceStore = useAppInterfaceStore()
 
 const videoStore = useVideoStore()
-const { namesAvailableStreams } = storeToRefs(videoStore)
+const widgetStore = useWidgetManagerStore()
+
+const { namessAvailableAbstractedStreams: namesAvailableStreams } = storeToRefs(videoStore)
 
 const props = defineProps<{
   /**
@@ -124,41 +143,72 @@ onBeforeMount(() => {
     flipHorizontally: false,
     flipVertically: false,
     rotationAngle: 0,
-    streamName: undefined as string | undefined,
+    statsForNerds: false,
+    internalStreamName: undefined as string | undefined,
   }
   widget.value.options = Object.assign({}, defaultOptions, widget.value.options)
-  nameSelectedStream.value = widget.value.options.streamName
+  nameSelectedStream.value = widget.value.options.internalStreamName
 })
+
+const externalStreamId = computed(() => {
+  return nameSelectedStream.value ? videoStore.externalStreamId(nameSelectedStream.value) : undefined
+})
+
+watch(
+  () => videoStore.streamsCorrespondency,
+  () => {
+    mediaStream.value = undefined
+
+    if (!nameSelectedStream.value) return
+
+    const selectedExternalId = videoStore.externalStreamId(nameSelectedStream.value)
+    if (!selectedExternalId) return
+
+    const newStreamCorr = videoStore.streamsCorrespondency.find((stream) => stream.externalId === selectedExternalId)
+    if (!newStreamCorr) return
+
+    const newInternalName = newStreamCorr.name
+
+    if (nameSelectedStream.value !== newInternalName) {
+      nameSelectedStream.value = newInternalName
+      widget.value.options.internalStreamName = newInternalName
+    }
+  },
+  { deep: true }
+)
 
 const streamConnectionRoutine = setInterval(() => {
   // If the video player widget is cold booted, assign the first stream to it
-  if (widget.value.options.streamName === undefined && !namesAvailableStreams.value.isEmpty()) {
-    widget.value.options.streamName = namesAvailableStreams.value[0]
-    nameSelectedStream.value = widget.value.options.streamName
+  if (widget.value.options.internalStreamName === undefined && !namesAvailableStreams.value.isEmpty()) {
+    widget.value.options.internalStreamName = namesAvailableStreams.value[0]
+    nameSelectedStream.value = widget.value.options.internalStreamName
+  }
 
-    // If there are multiple streams available, warn user that we chose one automatically and he should change if wanted
-    if (namesAvailableStreams.value.length > 1) {
-      const text = `You have multiple streams available, so we chose one randomly to start with.
-        If you want to change it, please open the widget configuration on the edit-menu.`
-      Swal.fire({ title: 'Multiple streams detected', text: text, icon: 'info', confirmButtonText: 'OK' })
+  if (externalStreamId.value !== undefined) {
+    const updatedMediaStream = videoStore.getMediaStream(externalStreamId.value)
+    // If the widget is not connected to the MediaStream, try to connect it
+    if (!isEqual(updatedMediaStream, mediaStream.value)) {
+      mediaStream.value = updatedMediaStream
+    }
+
+    const updatedStreamState = videoStore.getStreamData(externalStreamId.value)?.connected ?? false
+    if (updatedStreamState !== streamConnected.value) {
+      streamConnected.value = updatedStreamState
     }
   }
 
-  const updatedMediaStream = videoStore.getMediaStream(widget.value.options.streamName)
-  // If the widget is not connected to the MediaStream, try to connect it
-  if (!isEqual(updatedMediaStream, mediaStream.value)) {
-    mediaStream.value = updatedMediaStream
-  }
-
-  const updatedStreamState = videoStore.getStreamData(widget.value.options.streamName)?.connected ?? false
-  if (updatedStreamState !== streamConnected.value) {
-    streamConnected.value = updatedStreamState
+  if (!namesAvailableStreams.value.isEmpty() && !namesAvailableStreams.value.includes(nameSelectedStream.value!)) {
+    if (videoStore.lastRenamedStreamName !== '') {
+      nameSelectedStream.value = videoStore.lastRenamedStreamName
+      return
+    }
+    nameSelectedStream.value = namesAvailableStreams.value[0]
   }
 }, 1000)
 onBeforeUnmount(() => clearInterval(streamConnectionRoutine))
 
 watch(nameSelectedStream, () => {
-  widget.value.options.streamName = nameSelectedStream.value
+  widget.value.options.internalStreamName = nameSelectedStream.value
   mediaStream.value = undefined
 })
 
@@ -191,13 +241,19 @@ const transformStyle = computed(() => {
 })
 
 const serverStatus = computed(() => {
-  if (nameSelectedStream.value === undefined) return 'Unknown.'
-  return videoStore.getStreamData(nameSelectedStream.value)?.webRtcManager.signallerStatus ?? 'Unknown.'
+  if (externalStreamId.value === undefined) return 'Unknown.'
+  return videoStore.getStreamData(externalStreamId.value)?.webRtcManager.signallerStatus ?? 'Unknown.'
 })
 
 const streamStatus = computed(() => {
-  if (nameSelectedStream.value === undefined) return 'Unknown.'
-  return videoStore.getStreamData(nameSelectedStream.value)?.webRtcManager.streamStatus ?? 'Unknown.'
+  if (externalStreamId.value === undefined) return 'Unknown.'
+
+  const availableSources = videoStore.availableIceIps
+  if (!availableSources.isEmpty() && !availableSources.find((ip) => videoStore.allowedIceIps.includes(ip))) {
+    return `Stream is coming from IPs [${availableSources.join(', ')}], which are not in the list of allowed sources
+      [${videoStore.allowedIceIps.join(', ')}].\\n Please check your configuration.`
+  }
+  return videoStore.getStreamData(externalStreamId.value)?.webRtcManager.streamStatus ?? 'Unknown.'
 })
 </script>
 

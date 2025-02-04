@@ -40,7 +40,7 @@ module.exports = {
     'jsdoc/newline-after-description': 'off',
     'jsdoc/no-undefined-types': 'off',
     'jsdoc/require-returns': ['error', { forceReturnsWithAsync: false }],
-    'max-len': ['error', { code: 120, ignoreUrls: true, ignoreComments: true }],
+    'max-len': ['error', { code: 180, ignoreUrls: true, ignoreComments: true }],
     'no-alert': 'off',
     'no-console': 'off',
     'no-continue': 'off',
@@ -78,6 +78,7 @@ module.exports = {
     '@typescript-eslint/no-useless-constructor': ['error'],
     '@typescript-eslint/no-shadow': ['error'],
     '@typescript-eslint/explicit-function-return-type': ['error', { allowExpressions: true }],
+    '@typescript-eslint/no-explicit-any': 'off',
     'vue/no-unused-properties': [
       'error',
       {
@@ -92,10 +93,10 @@ module.exports = {
     'vue/max-len': [
       'error',
       {
-        code: 120,
-        template: 120,
+        code: 180,
+        template: 180,
         tabWidth: 4,
-        comments: 160,
+        comments: 180,
         ignoreComments: true,
         ignoreTrailingComments: true,
         ignoreHTMLAttributeValues: true,

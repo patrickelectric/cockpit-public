@@ -2,9 +2,7 @@ import { useDebounceFn, useStorage, useThrottleFn, useTimestamp } from '@vueuse/
 import { BlobReader, BlobWriter, ZipWriter } from '@zip.js/zip.js'
 import { differenceInSeconds, format } from 'date-fns'
 import { saveAs } from 'file-saver'
-import localforage from 'localforage'
 import { defineStore } from 'pinia'
-import Swal from 'sweetalert2'
 import { v4 as uuid } from 'uuid'
 import { computed, ref, watch } from 'vue'
 import fixWebmDuration from 'webm-duration-fix'
@@ -12,26 +10,31 @@ import adapter from 'webrtc-adapter'
 
 import { useInteractionDialog } from '@/composables/interactionDialog'
 import { useBlueOsStorage } from '@/composables/settingsSyncer'
+import { useSnackbar } from '@/composables/snackbar'
 import { WebRTCManager } from '@/composables/webRTC'
 import { getIpsInformationFromVehicle } from '@/libs/blueos'
+import eventTracker from '@/libs/external-telemetry/event-tracking'
 import { availableCockpitActions, registerActionCallback } from '@/libs/joystick/protocols/cockpit-actions'
 import { datalogger } from '@/libs/sensors-logging'
-import { isEqual } from '@/libs/utils'
+import { isEqual, sleep } from '@/libs/utils'
+import { tempVideoStorage, videoStorage } from '@/libs/videoStorage'
 import { useMainVehicleStore } from '@/stores/mainVehicle'
 import { useMissionStore } from '@/stores/mission'
 import { Alert, AlertLevel } from '@/types/alert'
+import { StorageDB } from '@/types/general'
 import {
   type DownloadProgressCallback,
   type FileDescriptor,
-  type StorageDB,
   type StreamData,
   type UnprocessedVideoInfo,
   type VideoProcessingDetails,
   getBlobExtensionContainer,
   VideoExtensionContainer,
+  VideoStreamCorrespondency,
 } from '@/types/video'
 
 import { useAlertStore } from './alert'
+const { showSnackbar } = useSnackbar()
 
 export const useVideoStore = defineStore('video', () => {
   const missionStore = useMissionStore()
@@ -41,16 +44,50 @@ export const useVideoStore = defineStore('video', () => {
   const { globalAddress, rtcConfiguration, webRTCSignallingURI } = useMainVehicleStore()
   console.debug('[WebRTC] Using webrtc-adapter for', adapter.browserDetails)
 
+  const streamsCorrespondency = useBlueOsStorage<VideoStreamCorrespondency[]>('cockpit-streams-correspondency', [])
   const allowedIceIps = useBlueOsStorage<string[]>('cockpit-allowed-stream-ips', [])
+  const enableAutoIceIpFetch = useBlueOsStorage('cockpit-enable-auto-ice-ip-fetch', true)
   const allowedIceProtocols = useBlueOsStorage<string[]>('cockpit-allowed-stream-protocols', [])
   const jitterBufferTarget = useBlueOsStorage<number | null>('cockpit-jitter-buffer-target', 0)
+  const zipMultipleFiles = useBlueOsStorage('cockpit-zip-multiple-video-files', false)
   const activeStreams = ref<{ [key in string]: StreamData | undefined }>({})
   const mainWebRTCManager = new WebRTCManager(webRTCSignallingURI, rtcConfiguration)
   const availableIceIps = ref<string[]>([])
   const unprocessedVideos = useStorage<{ [key in string]: UnprocessedVideoInfo }>('cockpit-unprocessed-video-info', {})
   const timeNow = useTimestamp({ interval: 500 })
+  const autoProcessVideos = useBlueOsStorage('cockpit-auto-process-videos', true)
+  const lastRenamedStreamName = ref('')
 
   const namesAvailableStreams = computed(() => mainWebRTCManager.availableStreams.value.map((stream) => stream.name))
+
+  const namessAvailableAbstractedStreams = computed(() => {
+    return streamsCorrespondency.value.map((stream) => stream.name)
+  })
+
+  const externalStreamId = (internalName: string): string | undefined => {
+    const corr = streamsCorrespondency.value.find((stream) => stream.name === internalName)
+    return corr ? corr.externalId : undefined
+  }
+
+  const initializeStreamsCorrespondency = (): void => {
+    if (streamsCorrespondency.value.length >= namesAvailableStreams.value.length) return
+
+    // If there are more external streams available than the ones in the correspondency, add the extra ones
+    const newCorrespondency: VideoStreamCorrespondency[] = []
+    let i = 1
+    namesAvailableStreams.value.forEach((streamName) => {
+      newCorrespondency.push({
+        name: `Stream ${i}`,
+        externalId: streamName,
+      })
+      i++
+    })
+    streamsCorrespondency.value = newCorrespondency
+  }
+
+  watch(namesAvailableStreams, () => {
+    initializeStreamsCorrespondency()
+  })
 
   // If the allowed ICE IPs are updated, all the streams should be reconnected
   watch([allowedIceIps, allowedIceProtocols], () => {
@@ -154,10 +191,26 @@ export const useVideoStore = defineStore('video', () => {
   const stopRecording = (streamName: string): void => {
     if (activeStreams.value[streamName] === undefined) activateStream(streamName)
 
+    const timeRecordingStart = activeStreams.value[streamName]?.timeRecordingStart
+    const durationInSeconds = timeRecordingStart ? differenceInSeconds(new Date(), timeRecordingStart) : undefined
+    eventTracker.capture('Video recording stop', { streamName, durationInSeconds })
+
     activeStreams.value[streamName]!.timeRecordingStart = undefined
 
     activeStreams.value[streamName]!.mediaRecorder!.stop()
+
+    datalogger.stopLogging()
     alertStore.pushAlert(new Alert(AlertLevel.Success, `Stopped recording stream ${streamName}.`))
+  }
+
+  const videoThumbnailFilename = (videoFileName: string): string => {
+    return `thumbnail_${videoFileName}.jpeg`
+  }
+
+  const getVideoThumbnail = async (videoFileNameOrHash: string, isProcessed: boolean): Promise<Blob | null> => {
+    const db = isProcessed ? videoStorage : tempVideoStorage
+    const thumbnail = await db.getItem(videoThumbnailFilename(videoFileNameOrHash))
+    return thumbnail || null
   }
 
   /**
@@ -165,8 +218,8 @@ export const useVideoStore = defineStore('video', () => {
    * @param {Blob} firstChunkBlob
    * @returns {Promise<string>} A promise that resolves with the base64-encoded image data of the thumbnail.
    */
-  const extractThumbnailFromVideo = async (firstChunkBlob: Blob): Promise<string> => {
-    return new Promise<string>((resolve, reject) => {
+  const extractThumbnailFromVideo = async (firstChunkBlob: Blob): Promise<Blob> => {
+    return new Promise<Blob>((resolve, reject) => {
       const videoObjectUrl = URL.createObjectURL(firstChunkBlob)
       const video = document.createElement('video')
 
@@ -198,9 +251,15 @@ export const useVideoStore = defineStore('video', () => {
         video.currentTime = 0
         seekResolve = () => {
           context.drawImage(video, 0, 0, width, height)
-          const base64ImageData = canvas.toDataURL('image/jpeg', 0.6)
-          resolve(base64ImageData)
-          URL.revokeObjectURL(videoObjectUrl)
+          const blobCallback = (blob: Blob | null): void => {
+            if (!blob) {
+              reject('Failed to create blob')
+              return
+            }
+            resolve(blob)
+            URL.revokeObjectURL(videoObjectUrl)
+          }
+          canvas.toBlob(blobCallback, 'image/jpeg', 0.6)
         }
       })
     })
@@ -211,24 +270,26 @@ export const useVideoStore = defineStore('video', () => {
    * @param {string} streamName - Name of the stream
    */
   const startRecording = async (streamName: string): Promise<void> => {
+    eventTracker.capture('Video recording start', { streamName: streamName })
     if (activeStreams.value[streamName] === undefined) activateStream(streamName)
 
     if (namesAvailableStreams.value.isEmpty()) {
-      Swal.fire({ text: 'No streams available.', icon: 'error' })
+      showDialog({ message: 'No streams available.', variant: 'error' })
       return
     }
 
     if (activeStreams.value[streamName]!.mediaStream === undefined) {
-      Swal.fire({ text: 'Media stream not defined.', icon: 'error' })
+      showDialog({ message: 'Media stream not defined.', variant: 'error' })
       return
     }
     if (!activeStreams.value[streamName]!.mediaStream!.active) {
-      Swal.fire({ text: 'Media stream not yet active. Wait a second and try again.', icon: 'error' })
+      showDialog({ message: 'Media stream not yet active. Wait a second and try again.', variant: 'error' })
       return
     }
 
     if (!datalogger.logging()) {
       datalogger.startLogging()
+      sleep(100)
     }
 
     activeStreams.value[streamName]!.timeRecordingStart = new Date()
@@ -236,7 +297,7 @@ export const useVideoStore = defineStore('video', () => {
 
     let recordingHash = ''
     let refreshHash = true
-    const namesCurrentChunksOnDB = await tempVideoChunksDB.keys()
+    const namesCurrentChunksOnDB = await tempVideoStorage.keys()
     while (refreshHash) {
       recordingHash = uuid().slice(0, 8)
       refreshHash = namesCurrentChunksOnDB.some((chunkName) => chunkName.includes(recordingHash))
@@ -259,7 +320,6 @@ export const useVideoStore = defineStore('video', () => {
       fileName,
       vWidth,
       vHeight,
-      thumbnail: '',
     }
     unprocessedVideos.value = { ...unprocessedVideos.value, ...{ [recordingHash]: videoInfo } }
 
@@ -273,32 +333,65 @@ export const useVideoStore = defineStore('video', () => {
         This usually happens when the device's storage is full or the performance is low.
         We recommend stopping the recording and trying again, as the video may be incomplete or corrupted
         on several parts.`
+      const sequentialChunksLossMessage = `Warning: Several video chunks could not be saved. The video recording may be impacted.`
+      const fivePercentChunksLossMessage = `Warning: More than 5% of the video chunks could not be saved. The video recording may be impacted.`
 
       console.error(chunkLossWarningMsg)
-      showDialog({ title: 'Video Recording Issue', message: chunkLossWarningMsg, variant: 'error' })
 
-      losingChunksWarningIssued = true
-      Object.keys(unsavedChunkAlerts).forEach((key) => {
-        clearTimeout(unsavedChunkAlerts[key])
-        delete unsavedChunkAlerts[key]
+      showSnackbar({
+        message: 'Oops, looks like a video chunk could not be saved. Retrying...',
+        duration: 2000,
+        variant: 'info',
+        closeButton: false,
       })
+
+      sequentialLostChunks++
+      totalLostChunks++
+
+      // Check for 5 or more sequential lost chunks
+      if (sequentialLostChunks >= 5 && losingChunksWarningIssued === false) {
+        showDialog({
+          message: sequentialChunksLossMessage,
+          variant: 'error',
+        })
+        sequentialLostChunks = 0
+        losingChunksWarningIssued = true
+      }
+
+      // Check if more than 5% of total video chunks are lost
+      const lostChunkPercentage = (totalLostChunks / totalChunks) * 100
+      if (totalChunks > 10 && lostChunkPercentage > 5 && losingChunksWarningIssued === false) {
+        showDialog({
+          message: fivePercentChunksLossMessage,
+          variant: 'error',
+        })
+        losingChunksWarningIssued = true
+      }
     }
+
+    Object.keys(unsavedChunkAlerts).forEach((key) => {
+      clearTimeout(unsavedChunkAlerts[key])
+      delete unsavedChunkAlerts[key]
+    })
+
+    let sequentialLostChunks = 0
+    let totalChunks = 0
+    let totalLostChunks = 0
 
     let chunksCount = -1
     activeStreams.value[streamName]!.mediaRecorder!.ondataavailable = async (e) => {
-      // Since this operation is async, at any given moment there might be more than one chunk processing promise started.
-      // To prevent reusing the name of the previous chunk (because of the counter not having been updated yet), we
-      // update the chunk count/name before anything else.
       chunksCount++
+      totalChunks++
       const chunkName = `${recordingHash}_${chunksCount}`
-      if (!losingChunksWarningIssued) {
-        unsavedChunkAlerts[chunkName] = setTimeout(() => warnAboutChunkLoss(), 5000)
-      }
 
       try {
-        await tempVideoChunksDB.setItem(chunkName, e.data)
+        await tempVideoStorage.setItem(chunkName, e.data)
+        sequentialLostChunks = 0
       } catch {
-        if (!losingChunksWarningIssued) warnAboutChunkLoss()
+        sequentialLostChunks++
+        totalLostChunks++
+
+        warnAboutChunkLoss()
         return
       }
 
@@ -309,11 +402,12 @@ export const useVideoStore = defineStore('video', () => {
       // Gets the thumbnail from the first chunk
       if (chunksCount === 0) {
         try {
-          const videoChunk = await tempVideoChunksDB.getItem(chunkName)
+          const videoChunk = await tempVideoStorage.getItem(chunkName)
           if (videoChunk) {
             const firstChunkBlob = new Blob([videoChunk as Blob])
             const thumbnail = await extractThumbnailFromVideo(firstChunkBlob)
-            updatedInfo.thumbnail = thumbnail
+            // Save thumbnail in the storage
+            await tempVideoStorage.setItem(videoThumbnailFilename(recordingHash), thumbnail)
             unprocessedVideos.value = { ...unprocessedVideos.value, ...{ [recordingHash]: updatedInfo } }
           }
         } catch (error) {
@@ -333,6 +427,21 @@ export const useVideoStore = defineStore('video', () => {
       info.dateFinish = new Date()
       unprocessedVideos.value = { ...unprocessedVideos.value, ...{ [recordingHash]: info } }
 
+      if (autoProcessVideos.value) {
+        try {
+          await processVideoChunksAndTelemetry([recordingHash])
+          showSnackbar({
+            message: 'Video processing completed.',
+            duration: 2000,
+            variant: 'success',
+            closeButton: false,
+          })
+        } catch (error) {
+          console.error('Failed to process video:', error)
+          alertStore.pushAlert(new Alert(AlertLevel.Error, `Failed to process video for stream ${streamName}.`))
+        }
+      }
+
       activeStreams.value[streamName]!.mediaRecorder = undefined
     }
 
@@ -343,13 +452,17 @@ export const useVideoStore = defineStore('video', () => {
   const discardProcessedFilesFromVideoDB = async (fileNames: string[]): Promise<void> => {
     console.debug(`Discarding files from the video recovery database: ${fileNames.join(', ')}`)
     for (const filename of fileNames) {
-      await videoStoringDB.removeItem(filename)
+      await videoStorage.removeItem(filename)
     }
   }
 
   const discardUnprocessedFilesFromVideoDB = async (hashes: string[]): Promise<void> => {
+    const allKeys = await tempVideoStorage.keys()
     for (const hash of hashes) {
-      await tempVideoChunksDB.removeItem(hash)
+      const keysToRemove = allKeys.filter((key) => key.includes(hash))
+      for (const key of keysToRemove) {
+        await tempVideoStorage.removeItem(key)
+      }
       delete unprocessedVideos.value[hash]
     }
   }
@@ -369,9 +482,10 @@ export const useVideoStore = defineStore('video', () => {
   }
 
   const downloadFiles = async (
-    db: StorageDB,
+    db: StorageDB | LocalForage,
     keys: string[],
-    zipFilenamePrefix: string,
+    shouldZip = false,
+    zipFilenamePrefix = 'Cockpit-Video-Files',
     progressCallback?: DownloadProgressCallback
   ): Promise<void> => {
     const maybeFiles = await Promise.all(
@@ -384,14 +498,14 @@ export const useVideoStore = defineStore('video', () => {
     const files = maybeFiles.filter((file): file is { blob: Blob; filename: string } => file.blob !== undefined)
 
     if (files.length === 0) {
-      Swal.fire({ text: 'No files found.', icon: 'error' })
+      showDialog({ message: 'No files found.', variant: 'error' })
       return
     }
 
-    if (files.length === 1) {
-      saveAs(files[0].blob, files[0].filename)
-    } else {
+    if (shouldZip) {
       await createZipAndDownload(files, `${zipFilenamePrefix}.zip`, progressCallback)
+    } else {
+      files.forEach(({ blob, filename }) => saveAs(blob, filename))
     }
   }
 
@@ -400,58 +514,45 @@ export const useVideoStore = defineStore('video', () => {
     progressCallback?: DownloadProgressCallback
   ): Promise<void> => {
     console.debug(`Downloading files from the video recovery database: ${fileNames.join(', ')}`)
-    await downloadFiles(
-      videoStoringDB,
-      fileNames,
-      fileNames.length > 1 ? 'Cockpit-Video-Recordings' : 'Cockpit-Video-Recording',
-      progressCallback
-    )
+    if (zipMultipleFiles.value) {
+      const ZipFilename = fileNames.length > 1 ? 'Cockpit-Video-Recordings' : 'Cockpit-Video-Recording'
+      await downloadFiles(videoStorage, fileNames, true, ZipFilename, progressCallback)
+    } else {
+      await downloadFiles(videoStorage, fileNames)
+    }
   }
 
   const downloadTempVideo = async (hashes: string[], progressCallback?: DownloadProgressCallback): Promise<void> => {
     console.debug(`Downloading ${hashes.length} video chunks from the temporary database.`)
 
     for (const hash of hashes) {
-      const fileNames = (await tempVideoChunksDB.keys()).filter((filename) => filename.includes(hash))
-      await downloadFiles(tempVideoChunksDB, fileNames, `Cockpit-Unprocessed-Video-Chunks-${hash}`, progressCallback)
+      const fileNames = (await tempVideoStorage.keys()).filter((filename) => filename.includes(hash))
+      const zipFilenamePrefix = `Cockpit-Unprocessed-Video-Chunks-${hash}`
+      await downloadFiles(tempVideoStorage, fileNames, true, zipFilenamePrefix, progressCallback)
     }
   }
 
   // Used to clear the temporary video database
   const clearTemporaryVideoDB = async (): Promise<void> => {
-    await tempVideoChunksDB.clear()
+    await tempVideoStorage.clear()
   }
 
   const temporaryVideoDBSize = async (): Promise<number> => {
     let totalSizeBytes = 0
-    await tempVideoChunksDB.iterate((chunk) => {
-      totalSizeBytes += (chunk as Blob).size
-    })
+    const keys = await tempVideoStorage.keys()
+    for (const key of keys) {
+      const blob = await tempVideoStorage.getItem(key)
+      if (blob) {
+        totalSizeBytes += blob.size
+      }
+    }
     return totalSizeBytes
   }
 
   const videoStorageFileSize = async (filename: string): Promise<number | undefined> => {
-    const file = await videoStoringDB.getItem(filename)
+    const file = await videoStorage.getItem(filename)
     return file ? (file as Blob).size : undefined
   }
-
-  // Used to store chunks of an ongoing recording, that will be merged into a video file when the recording is stopped
-  const tempVideoChunksDB = localforage.createInstance({
-    driver: localforage.INDEXEDDB,
-    name: 'Cockpit - Temporary Video',
-    storeName: 'cockpit-temp-video-db',
-    version: 1.0,
-    description: 'Database for storing the chunks of an ongoing recording, to be merged afterwards.',
-  })
-
-  // Offer download of backuped videos
-  const videoStoringDB = localforage.createInstance({
-    driver: localforage.INDEXEDDB,
-    name: 'Cockpit - Video Recovery',
-    storeName: 'cockpit-video-recovery-db',
-    version: 1.0,
-    description: 'Local backups of Cockpit video recordings to be retrieved in case of failure.',
-  })
 
   const updateLastProcessingUpdate = (recordingHash: string): void => {
     const info = unprocessedVideos.value[recordingHash]
@@ -504,11 +605,14 @@ export const useVideoStore = defineStore('video', () => {
       const dateFinish = new Date(info.dateFinish!)
 
       debouncedUpdateFileProgress(info.fileName, 30, 'Grouping video chunks.')
-      await tempVideoChunksDB.iterate((videoChunk, chunkName) => {
-        if (chunkName.includes(hash)) {
-          chunks.push({ blob: videoChunk as Blob, name: chunkName })
+      const keys = await tempVideoStorage.keys()
+      const filteredKeys = keys.filter((key) => key.includes(hash) && key !== videoThumbnailFilename(hash))
+      for (const key of filteredKeys) {
+        const blob = await tempVideoStorage.getItem(key)
+        if (blob && blob.size > 0) {
+          chunks.push({ blob, name: key })
         }
-      })
+      }
 
       // As we advance through the processing, we update the last processing update date, so consumers know this is ongoing
       updateLastProcessingUpdate(hash)
@@ -544,7 +648,12 @@ export const useVideoStore = defineStore('video', () => {
       updateLastProcessingUpdate(hash)
 
       debouncedUpdateFileProgress(info.fileName, 75, `Saving video file.`)
-      await videoStoringDB.setItem(`${info.fileName}.${extensionContainer || '.webm'}`, durFixedBlob ?? mergedBlob)
+      const finalFileName = `${info.fileName}.${extensionContainer || 'webm'}`
+      await videoStorage.setItem(finalFileName, durFixedBlob ?? mergedBlob)
+
+      // Save thumbnail in the storage
+      const thumbnail = await extractThumbnailFromVideo(chunkBlobs[0])
+      await videoStorage.setItem(videoThumbnailFilename(finalFileName), thumbnail)
 
       updateLastProcessingUpdate(hash)
 
@@ -558,7 +667,7 @@ export const useVideoStore = defineStore('video', () => {
       const videoTelemetryLog = datalogger.getSlice(telemetryLog, dateStart, dateFinish)
       const assLog = datalogger.toAssOverlay(videoTelemetryLog, info.vWidth!, info.vHeight!, dateStart.getTime())
       const logBlob = new Blob([assLog], { type: 'text/plain' })
-      videoStoringDB.setItem(`${info.fileName}.ass`, logBlob)
+      videoStorage.setItem(`${info.fileName}.ass`, logBlob)
 
       updateLastProcessingUpdate(hash)
 
@@ -571,7 +680,11 @@ export const useVideoStore = defineStore('video', () => {
 
   // Remove temp chunks and video metadata from the database
   const cleanupProcessedData = async (recordingHash: string): Promise<void> => {
-    await tempVideoChunksDB.removeItem(recordingHash)
+    const keys = await tempVideoStorage.keys()
+    const filteredKeys = keys.filter((key) => key.includes(recordingHash) && key.includes('_'))
+    for (const key of filteredKeys) {
+      await tempVideoStorage.removeItem(key)
+    }
     delete unprocessedVideos.value[recordingHash]
   }
 
@@ -610,7 +723,7 @@ export const useVideoStore = defineStore('video', () => {
     if (keysFailedUnprocessedVideos.value.isEmpty()) return
     console.log(`Processing unprocessed videos: ${keysFailedUnprocessedVideos.value.join(', ')}`)
 
-    const chunks = await tempVideoChunksDB.keys()
+    const chunks = await tempVideoStorage.keys()
     if (chunks.length === 0) {
       discardUnprocessedVideos()
       throw new Error('No video recording data found. Discarding leftover info.')
@@ -637,14 +750,14 @@ export const useVideoStore = defineStore('video', () => {
     console.log('Discarding unprocessed videos.')
 
     const keysUnprocessedVideos = includeNotFailed ? keysAllUnprocessedVideos.value : keysFailedUnprocessedVideos.value
-    const currentChunks = await tempVideoChunksDB.keys()
+    const currentChunks = await tempVideoStorage.keys()
     const chunksUnprocessedVideos = currentChunks.filter((chunkName) => {
       return keysUnprocessedVideos.some((key) => chunkName.includes(key))
     })
 
     unprocessedVideos.value = {}
     for (const chunk of chunksUnprocessedVideos) {
-      tempVideoChunksDB.removeItem(chunk)
+      tempVideoStorage.removeItem(chunk)
     }
   }
 
@@ -656,96 +769,96 @@ export const useVideoStore = defineStore('video', () => {
   }
 
   const issueSelectedIpNotAvailableWarning = (): void => {
-    Swal.fire({
-      html: `
-        <p>Cockpit detected that you selected an IP on the video configuration page that is not available
-        on the video server. This will lead to no video being streamed. This can happen if you changed your
-        network or the IP of your vehicle.</p>
-        </br>
-        <p>To solve this problem, please:</p>
-        <ol>
-          <li>1. Open the video configuration page (Main-menu > Configuration > Video).</li>
-          <li>2. Clear the selected IPs and select an available one from the list.</li>
-        </ol>
-      `,
-      icon: 'warning',
-      customClass: {
-        htmlContainer: 'text-left',
-      },
+    showDialog({
+      maxWidth: 600,
+      title: 'All available video stream IPs are being blocked',
+      message: [
+        `Cockpit detected that none of the IPs that are streaming video from your server are in the allowed list. This
+        will lead to no video being streamed.`,
+        'This can happen if you changed your network or the IP of your vehicle.',
+        `To solve this problem, please open the video configuration page (Main-menu > Settings > Video) and clear
+        the selected IPs. Then, select an available IP from the list.`,
+      ],
+      variant: 'warning',
     })
   }
 
   const issueNoIpSelectedWarning = (): void => {
-    Swal.fire({
-      html: `
-        <p>Cockpit detected more than one IP address being used to route the video streaming. This often
-        leads to video stuttering, especially if one of the IPs is from a non-wired connection.</p>
-        </br>
-        <p>To prevent issues and achieve an optimal streaming experience, please:</p>
-        <ol>
-          <li>1. Open the video configuration page (Main-menu > Configuration > Video).</li>
-          <li>2. Select the IP address that should be used for the video streaming.</li>
-        </ol>
-      `,
-      icon: 'warning',
-      customClass: {
-        htmlContainer: 'text-left',
-      },
+    showDialog({
+      maxWidth: 600,
+      title: 'Video being routed from multiple IPs',
+      message: [
+        `Cockpit detected that the video streams are being routed from multiple IPs. This often leads to video
+        stuttering, especially if one of the IPs is from a non-wired connection.`,
+        `To prevent issues and achieve an optimal streaming experience, please open the video configuration page
+        (Main-menu > Settings > Video) and select the IP address that should be used for the video streaming.`,
+      ],
+      variant: 'warning',
     })
   }
 
-  // Routine to make sure the user has chosen the allowed ICE candidate IPs, so the stream works as expected
-  let noIpSelectedWarningIssued = false
-  let selectedIpNotAvailableWarningIssued = false
-  const iceIpCheckInterval = setInterval(async (): Promise<void> => {
-    // Pass if there are no available IPs yet
-    if (availableIceIps.value.isEmpty()) return
+  if (enableAutoIceIpFetch.value) {
+    // Routine to make sure the user has chosen the allowed ICE candidate IPs, so the stream works as expected
+    let noIpSelectedWarningIssued = false
+    let selectedIpNotAvailableWarningIssued = false
+    const iceIpCheckInterval = setInterval(async (): Promise<void> => {
+      // Pass if there are no available IPs yet
+      if (availableIceIps.value.isEmpty()) return
 
-    if (!allowedIceIps.value.isEmpty()) {
-      // If the user has selected IPs, but none of them are available, warn about it, since no video will be streamed.
-      // Otherwise, if IPs are selected and available, clear the check routine.
-      const availableSelectedIps = availableIceIps.value.filter((ip) => allowedIceIps.value.includes(ip))
-      if (availableSelectedIps.isEmpty() && !selectedIpNotAvailableWarningIssued) {
-        console.warn('Selected ICE IPs are not available. Warning user.')
-        issueSelectedIpNotAvailableWarning()
-        selectedIpNotAvailableWarningIssued = true
-      }
-      clearInterval(iceIpCheckInterval)
-    }
-
-    // If the user has not selected any IPs and there's more than one IP candidate available, try getting information
-    // about them from BlueOS. If that fails, send a warning an clear the check routine.
-    if (allowedIceIps.value.isEmpty() && availableIceIps.value.length >= 1) {
-      // Try to select the IP automatically if it's a wired connection (based on BlueOS data).
-      try {
-        const ipsInfo = await getIpsInformationFromVehicle(globalAddress)
-        const newAllowedIps: string[] = []
-        ipsInfo.forEach((ipInfo) => {
-          const isIceIp = availableIceIps.value.includes(ipInfo.ipv4Address)
-          const alreadyAllowedIp = [...allowedIceIps.value, ...newAllowedIps].includes(ipInfo.ipv4Address)
-          const theteredInterfaceTypes = ['WIRED', 'USB']
-          if (!theteredInterfaceTypes.includes(ipInfo.interfaceType) || alreadyAllowedIp || !isIceIp) return
-          console.info(`Adding the wired address '${ipInfo.ipv4Address}' to the list of allowed ICE IPs.`)
-          newAllowedIps.push(ipInfo.ipv4Address)
-        })
-        allowedIceIps.value = newAllowedIps
-        if (!allowedIceIps.value.isEmpty()) {
-          Swal.fire({ text: 'Preferred video stream routes fetched from BlueOS.', icon: 'success', timer: 5000 })
+      if (!allowedIceIps.value.isEmpty()) {
+        // If the user has selected IPs, but none of them are available, warn about it, since no video will be streamed.
+        // Otherwise, if IPs are selected and available, clear the check routine.
+        const availableSelectedIps = availableIceIps.value.filter((ip) => allowedIceIps.value.includes(ip))
+        if (availableSelectedIps.isEmpty() && !selectedIpNotAvailableWarningIssued) {
+          console.warn('Selected ICE IPs are not available. Warning user.')
+          issueSelectedIpNotAvailableWarning()
+          selectedIpNotAvailableWarningIssued = true
         }
-      } catch (error) {
-        console.error('Failed to get IP information from the vehicle:', error)
+        clearInterval(iceIpCheckInterval)
       }
 
-      // If the system was still not able to populate the allowed IPs list yet, warn the user.
-      // Otherwise, clear the check routine.
-      if (allowedIceIps.value.isEmpty() && !noIpSelectedWarningIssued) {
-        console.info('No ICE IPs selected for the allowed list. Warning user.')
-        issueNoIpSelectedWarning()
-        noIpSelectedWarningIssued = true
+      // If the user has not selected any IPs and there's more than one IP candidate available, try getting information
+      // about them from BlueOS. If that fails, send a warning an clear the check routine.
+      if (allowedIceIps.value.isEmpty() && availableIceIps.value.length >= 1) {
+        // Try to select the IP automatically if it's a wired connection (based on BlueOS data).
+        let currentlyOnWirelessConnection = false
+        try {
+          const ipsInfo = await getIpsInformationFromVehicle(globalAddress)
+          const newAllowedIps: string[] = []
+          ipsInfo.forEach((ipInfo) => {
+            const isIceIp = availableIceIps.value.includes(ipInfo.ipv4Address)
+            const alreadyAllowedIp = [...allowedIceIps.value, ...newAllowedIps].includes(ipInfo.ipv4Address)
+            const theteredInterfaceTypes = ['WIRED', 'USB']
+            if (globalAddress === ipInfo.ipv4Address && !theteredInterfaceTypes.includes(ipInfo.interfaceType)) {
+              currentlyOnWirelessConnection = true
+            }
+            if (!theteredInterfaceTypes.includes(ipInfo.interfaceType) || alreadyAllowedIp || !isIceIp) return
+            console.info(`Adding the wired address '${ipInfo.ipv4Address}' to the list of allowed ICE IPs.`)
+            newAllowedIps.push(ipInfo.ipv4Address)
+          })
+          allowedIceIps.value = newAllowedIps
+          if (!allowedIceIps.value.isEmpty()) {
+            showDialog({
+              message: 'Preferred video stream routes fetched from BlueOS.',
+              variant: 'success',
+              timer: 5000,
+            })
+          }
+        } catch (error) {
+          console.error('Failed to get IP information from the vehicle:', error)
+        }
+
+        // If the system was still not able to populate the allowed IPs list yet, warn the user.
+        // Otherwise, clear the check routine.
+        if (allowedIceIps.value.isEmpty() && !noIpSelectedWarningIssued && !currentlyOnWirelessConnection) {
+          console.info('No ICE IPs selected for the allowed list. Warning user.')
+          issueNoIpSelectedWarning()
+          noIpSelectedWarningIssued = true
+        }
+        clearInterval(iceIpCheckInterval)
       }
-      clearInterval(iceIpCheckInterval)
-    }
-  }, 5000)
+    }, 5000)
+  }
 
   // Video recording actions
   const startRecordingAllStreams = (): void => {
@@ -782,6 +895,33 @@ export const useVideoStore = defineStore('video', () => {
     alertStore.pushAlert(new Alert(AlertLevel.Success, `Stopped recording streams: ${streamsThatStopped.join(', ')}.`))
   }
 
+  const renameStreamInternalNameById = (streamID: string, newInternalName: string): void => {
+    const streamCorr = streamsCorrespondency.value.find((stream) => stream.externalId === streamID)
+
+    if (streamCorr) {
+      const oldInternalName = streamCorr.name
+      streamCorr.name = newInternalName
+
+      const streamData = activeStreams.value[oldInternalName]
+      if (streamData) {
+        activeStreams.value = {
+          ...activeStreams.value,
+          [newInternalName]: streamData,
+        }
+        delete activeStreams.value[oldInternalName]
+      }
+      lastRenamedStreamName.value = newInternalName
+      console.log(`Stream internal name updated from '${oldInternalName}' to '${newInternalName}'.`)
+    } else {
+      console.warn(`Stream with ID '${streamID}' not found.`)
+      showSnackbar({
+        variant: 'error',
+        message: `Stream with ID '${streamID}' not found.`,
+        duration: 3000,
+      })
+    }
+  }
+
   registerActionCallback(
     availableCockpitActions.start_recording_all_streams,
     useThrottleFn(startRecordingAllStreams, 3000)
@@ -792,13 +932,19 @@ export const useVideoStore = defineStore('video', () => {
   )
 
   return {
+    autoProcessVideos,
     availableIceIps,
     allowedIceIps,
+    enableAutoIceIpFetch,
     allowedIceProtocols,
     jitterBufferTarget,
+    zipMultipleFiles,
     namesAvailableStreams,
-    videoStoringDB,
-    tempVideoChunksDB,
+    videoStorage,
+    tempVideoStorage,
+    streamsCorrespondency,
+    namessAvailableAbstractedStreams,
+    externalStreamId,
     discardProcessedFilesFromVideoDB,
     discardUnprocessedFilesFromVideoDB,
     downloadFilesFromVideoDB,
@@ -821,5 +967,10 @@ export const useVideoStore = defineStore('video', () => {
     overallProgress,
     processVideoChunksAndTelemetry,
     isVideoFilename,
+    getVideoThumbnail,
+    videoThumbnailFilename,
+    activeStreams,
+    renameStreamInternalNameById,
+    lastRenamedStreamName,
   }
 })

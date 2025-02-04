@@ -1,35 +1,42 @@
 <template>
-  <div class="flex items-center justify-center h-12 py-1 mx-1 text-white transition-all w-[7rem]">
-    <span class="relative w-[2rem] mdi icon-symbol text-[32px]" :class="[miniWidget.options.iconName]"></span>
-    <div class="flex flex-col items-start justify-center ml-1 select-none w-[4.75rem]">
-      <div>
-        <span class="font-mono text-xl font-semibold leading-6 w-fit">{{ parsedState }}</span>
-        <span class="text-xl font-semibold leading-6 w-fit">
-          {{ String.fromCharCode(0x20) }} {{ miniWidget.options.variableUnit }}
-        </span>
+  <div
+    class="h-12 p-1 min-w-[8.5rem] text-white transition-all relative scroll-container"
+    :class="{
+      'border-[1px] border-dashed border-[#FFFFFF55]': widgetStore.miniWidgetManagerVars(miniWidget.hash)
+        .configMenuOpen,
+    }"
+    :style="{ width: miniWidget.options.widgetWidth + 'px' }"
+  >
+    <span class="h-full left-[0.5rem] bottom-[5%] absolute mdi text-[2.25rem]" :class="[miniWidget.options.iconName]" />
+    <div class="absolute left-[3rem] h-full select-none font-semibold scroll-container w-full">
+      <div class="w-full" :class="{ 'scroll-text': valueIsOverflowing }">
+        <span class="font-mono text-xl leading-6">{{ parsedState }}</span>
+        <span class="text-xl leading-6"> {{ String.fromCharCode(0x20) }} {{ miniWidget.options.variableUnit }} </span>
       </div>
-      <span class="w-full text-sm font-semibold leading-4 whitespace-nowrap">{{ miniWidget.options.displayName }}</span>
+      <span class="w-full text-sm absolute bottom-[0.5rem] whitespace-nowrap text-ellipsis overflow-x-hidden">
+        {{ miniWidget.options.displayName }}
+      </span>
     </div>
   </div>
   <v-dialog
-    v-model="miniWidget.managerVars.configMenuOpen"
-    persistent
+    v-model="widgetStore.miniWidgetManagerVars(miniWidget.hash).configMenuOpen"
     class="w-[100vw] flex justify-center items-center"
+    @after-leave="closeVgiDialog"
   >
-    <v-card class="p-8 configModal">
-      <div class="close-icon mdi mdi-close" @click.stop="closeDialog"></div>
+    <v-card class="config-modal p-8" :style="interfaceStore.globalGlassMenuStyles">
+      <div class="close-icon mdi mdi-close" @click.stop="closeVgiDialog"></div>
       <v-card-title class="text-white">
         <div class="flex items-center mb-3 mt-[-5px] justify-evenly">
           <div
-            class="px-3 py-1 transition-all rounded-md cursor-pointer select-none text-slate-100 hover:bg-slate-400"
-            :class="{ 'bg-slate-400': currentTab === 'presets' }"
+            class="px-3 py-1 transition-all rounded-md cursor-pointer select-none text-slate-100 hover:bg-[#FFFFFF33]"
+            :class="{ 'bg-[#FFFFFF22]': currentTab === 'presets' }"
             @click="currentTab = 'presets'"
           >
             Presets
           </div>
           <div
-            class="px-3 py-1 transition-all rounded-md cursor-pointer select-none text-slate-100 hover:bg-slate-400"
-            :class="{ 'bg-slate-400': currentTab === 'custom' }"
+            class="px-3 py-1 transition-all rounded-md cursor-pointer select-none text-slate-100 hover:bg-[#FFFFFF33]"
+            :class="{ 'bg-[#FFFFFF22]': currentTab === 'custom' }"
             @click="currentTab = 'custom'"
           >
             Custom
@@ -38,15 +45,25 @@
       </v-card-title>
 
       <div v-if="currentTab === 'custom'" class="flex flex-col items-center justify-around">
-        <div class="flex flex-col items-center justify-between w-full mt-3">
-          <span class="w-full mb-1 text-sm text-slate-100/50">Display name</span>
-          <input v-model="miniWidget.options.displayName" class="w-full px-2 py-1 rounded-md bg-slate-200" />
+        <div class="flex w-full gap-x-10">
+          <div class="flex flex-col items-center justify-between w-3/4 mt-3">
+            <span class="w-full mb-1 text-sm text-slate-100/50">Display name</span>
+            <input v-model="miniWidget.options.displayName" class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]" />
+          </div>
+          <div class="flex flex-col items-center justify-between w-1/4 mt-3">
+            <span class="w-full text-sm text-slate-100/50">Display Width</span>
+            <input
+              v-model="miniWidget.options.widgetWidth"
+              type="number"
+              class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]"
+            />
+          </div>
         </div>
         <div class="flex flex-col items-center justify-between w-full mt-3">
           <span class="w-full mb-1 text-sm text-slate-100/50">Variable</span>
           <div class="relative w-full">
             <button
-              class="w-full py-1 pl-2 pr-8 text-left transition-all rounded-md bg-slate-200 hover:bg-slate-400"
+              class="w-full py-1 pl-2 pr-8 text-left transition-all rounded-md bg-[#FFFFFF12] hover:bg-slate-400"
               @click="showVariableChooseModal = !showVariableChooseModal"
             >
               <p class="text-ellipsis overflow-x-clip">
@@ -58,12 +75,13 @@
             />
           </div>
         </div>
+
         <Transition>
           <div v-if="showVariableChooseModal" class="flex flex-col justify-center w-full mx-1 my-3 align-center">
             <input
               v-model="variableNameSearchString"
               placeholder="Search variable..."
-              class="w-full px-2 py-1 rounded-md bg-slate-200"
+              class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]"
             />
             <div class="grid w-full h-32 grid-cols-1 my-2 overflow-x-hidden overflow-y-scroll">
               <span
@@ -80,18 +98,29 @@
         <div class="flex items-center justify-between w-full mt-2">
           <div class="flex flex-col items-center justify-between w-full mx-5">
             <span class="w-full mb-1 text-sm text-slate-100/50">Unit</span>
-            <input v-model="miniWidget.options.variableUnit" class="w-full px-2 py-1 rounded-md bg-slate-200" />
+            <input v-model="miniWidget.options.variableUnit" class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]" />
           </div>
           <div class="flex flex-col items-center justify-between w-full mx-5">
             <span class="w-full mb-1 text-sm text-slate-100/50">Multiplier</span>
-            <input v-model="miniWidget.options.variableMultiplier" class="w-full px-2 py-1 rounded-md bg-slate-200" />
+            <input v-model="miniWidget.options.variableMultiplier" class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]" />
+          </div>
+          <div class="flex flex-col items-center justify-between w-full mx-5">
+            <span class="w-full mb-1 text-sm text-slate-100/50">Decimal Places</span>
+            <input
+              v-model="miniWidget.options.decimalPlaces"
+              type="number"
+              min="0"
+              max="5"
+              placeholder="Auto-formatting"
+              class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]"
+            />
           </div>
         </div>
         <div class="flex flex-col items-center justify-between w-full mt-3">
           <span class="w-full mb-1 text-sm text-slate-100/50">Icon</span>
           <div class="relative w-full">
             <button
-              class="w-full py-1 pl-2 pr-8 text-left transition-all rounded-md bg-slate-200 hover:bg-slate-400"
+              class="w-full py-1 pl-2 pr-8 text-left transition-all rounded-md bg-[#FFFFFF12] hover:bg-slate-400"
               @click="showIconChooseModal = !showIconChooseModal"
             >
               <p class="text-ellipsis overflow-x-clip">{{ miniWidget.options.iconName || 'Click to choose...' }}</p>
@@ -107,7 +136,7 @@
             <div>
               <input
                 v-model="iconSearchString"
-                class="w-full px-2 py-1 rounded-md bg-slate-200"
+                class="w-full px-2 py-1 rounded-md bg-[#FFFFFF12]"
                 placeholder="Search icons..."
               />
             </div>
@@ -137,7 +166,7 @@
           </div>
         </Transition>
       </div>
-      <div v-if="currentTab === 'presets'" class="flex flex-wrap items-center justify-around">
+      <div v-if="currentTab === 'presets'" class="flex flex-wrap items-center justify-around max-w-[24rem]">
         <div
           v-for="(template, i) in veryGenericIndicatorPresets"
           :key="i"
@@ -161,15 +190,19 @@
 import * as MdiExports from '@mdi/js/mdi'
 import { watchThrottled } from '@vueuse/core'
 import Fuse from 'fuse.js'
-import Swal from 'sweetalert2'
-import { computed, onBeforeMount, onMounted, ref, toRefs, watch, watchEffect } from 'vue'
+import { computed, onBeforeMount, onMounted, ref, toRefs, watch } from 'vue'
 
+import { useInteractionDialog } from '@/composables/interactionDialog'
 import { CurrentlyLoggedVariables, datalogger } from '@/libs/sensors-logging'
 import { round } from '@/libs/utils'
+import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useMainVehicleStore } from '@/stores/mainVehicle'
 import { useWidgetManagerStore } from '@/stores/widgetManager'
 import { type VeryGenericIndicatorPreset, veryGenericIndicatorPresets } from '@/types/genericIndicator'
 import type { MiniWidget } from '@/types/widgets'
+
+const { showDialog } = useInteractionDialog()
+const interfaceStore = useAppInterfaceStore()
 
 const props = defineProps<{
   /**
@@ -180,7 +213,6 @@ const props = defineProps<{
 const miniWidget = toRefs(props).miniWidget
 
 onBeforeMount(() => {
-  // Set initial widget options if they don't exist
   if (Object.keys(miniWidget.value.options).length === 0) {
     Object.assign(miniWidget.value.options, {
       displayName: '',
@@ -188,6 +220,8 @@ onBeforeMount(() => {
       iconName: 'mdi-help-box',
       variableUnit: '%',
       variableMultiplier: 1,
+      decimalPlaces: null,
+      widgetWidth: 136,
     })
   }
 
@@ -202,15 +236,36 @@ const widgetStore = useWidgetManagerStore()
 const currentState = ref<unknown>(0)
 
 const finalValue = computed(() => Number(miniWidget.value.options.variableMultiplier) * Number(currentState.value))
+
 const parsedState = computed(() => {
   if (currentState.value === undefined) {
     return '--'
   }
   const value = finalValue.value
-  if (value < 1) return value.toFixed(2)
-  if (value >= 1 && value < 100) return value.toFixed(1)
-  if (value >= 10000) return `${(value / 10000).toFixed(0)}k`
+
+  const decimalPlaces = miniWidget.value.options.decimalPlaces
+  if (decimalPlaces !== null && !isNaN(decimalPlaces)) {
+    return value.toFixed(decimalPlaces)
+  }
+
+  if (value < 0 && value > -10) return value.toFixed(1)
+  if (value <= -10 && value > -100) return value.toFixed(1)
+  if (value <= -100 && value > -1000) return value.toFixed(0)
+  if (value <= -1000 && value > -10000) return `${(value / 1000).toFixed(1)}k`
+  if (value <= -10000) return `${(value / 1000).toFixed(0)}k`
+
+  if (value < 1) return value.toFixed(3)
+  if (value >= 1 && value < 100) return value.toFixed(2)
+  if (value >= 100 && value < 1000) return value.toFixed(1)
+  if (value >= 1000 && value < 10000) return value.toFixed(0)
+  if (value >= 10000 && value < 100000) return `${(value / 1000).toFixed(1)}k`
+  if (value >= 100000) return `${(value / 1000).toFixed(0)}k`
+
   return value.toFixed(0)
+})
+
+const valueIsOverflowing = computed(() => {
+  return finalValue.value <= -100000 || finalValue.value >= 1000000
 })
 
 const loggedMiniWidgets = ref(Array.from(CurrentlyLoggedVariables.getAllVariables()))
@@ -220,22 +275,21 @@ const updateLoggedMiniWidgets = (): void => {
   loggedMiniWidgets.value = Array.from(CurrentlyLoggedVariables.getAllVariables())
 }
 
-// prevent closing the configuration menu if no variable and name are selected
-const closeDialog = async (): Promise<void> => {
-  const { variableName, displayName } = miniWidget.value.options
-  const { managerVars } = miniWidget.value
+const widgetIsConfigured = computed(() => {
+  return miniWidget.value.options.displayName !== '' && miniWidget.value.options.variableName !== ''
+})
 
-  if (variableName === '' || displayName === '') {
-    await Swal.fire({
-      text: 'Please select a variable and name it before closing the configuration menu.',
-      icon: 'error',
-    })
-    return
+// prevent closing the configuration menu if no variable and name are selected
+const closeVgiDialog = async (): Promise<void> => {
+  const managerVars = widgetStore.miniWidgetManagerVars(miniWidget.value.hash)
+
+  if (widgetIsConfigured.value) {
+    CurrentlyLoggedVariables.removeVariable(lastWidgetName.value)
+    CurrentlyLoggedVariables.addVariable(miniWidget.value.options.displayName)
+    lastWidgetName.value = miniWidget.value.options.displayName
+    updateLoggedMiniWidgets()
   }
-  CurrentlyLoggedVariables.removeVariable(lastWidgetName.value)
-  CurrentlyLoggedVariables.addVariable(miniWidget.value.options.displayName)
-  lastWidgetName.value = miniWidget.value.options.displayName
-  updateLoggedMiniWidgets()
+
   managerVars.configMenuOpen = false
 }
 
@@ -263,9 +317,25 @@ const logCurrentState = (): void => {
 }
 
 watch(
+  () => miniWidget.value.options.decimalPlaces,
+  (newVal) => {
+    if (newVal === '' || newVal === null || newVal === undefined) {
+      miniWidget.value.options.decimalPlaces = null
+    } else {
+      const num = Number(newVal)
+      if (!isNaN(num) && num >= 0 && Number.isInteger(num)) {
+        miniWidget.value.options.decimalPlaces = num
+      } else {
+        miniWidget.value.options.decimalPlaces = null
+      }
+    }
+  }
+)
+
+watch(
   finalValue,
   () => {
-    if (miniWidget.value.managerVars.configMenuOpen === false) {
+    if (widgetStore.miniWidgetManagerVars(miniWidget.value.hash).configMenuOpen === false) {
       logCurrentState()
     }
   },
@@ -273,7 +343,12 @@ watch(
 )
 
 watch(store.genericVariables, () => updateVariableState())
-watch(store.availableGenericVariables, () => updateGenericVariablesNames())
+
+watch(
+  () => store.availableGenericVariables,
+  () => updateGenericVariablesNames(),
+  { deep: true }
+)
 watch(
   miniWidget,
   () => {
@@ -353,17 +428,17 @@ const chooseIcon = (iconName: string): void => {
 
 watch(showVariableChooseModal, async (newValue) => {
   if (newValue === true && variableNamesToShow.value.isEmpty()) {
-    miniWidget.value.managerVars.configMenuOpen = false
+    widgetStore.miniWidgetManagerVars(miniWidget.value.hash).configMenuOpen = false
     showVariableChooseModal.value = false
-    await Swal.fire({
-      text: 'No variables found to choose from. Please make sure your vehicle is connected.',
-      icon: 'error',
+    await showDialog({
+      message: 'No variables found to choose from. Please make sure your vehicle is connected.',
+      variant: 'error',
     })
-    miniWidget.value.managerVars.configMenuOpen = true
+    widgetStore.miniWidgetManagerVars(miniWidget.value.hash).configMenuOpen = true
   }
 })
 
-const currentTab = ref('presets')
+const currentTab = ref(widgetIsConfigured.value ? 'custom' : 'presets')
 
 const setIndicatorFromTemplate = (template: VeryGenericIndicatorPreset): void => {
   miniWidget.value.options.displayName = template.displayName
@@ -372,36 +447,47 @@ const setIndicatorFromTemplate = (template: VeryGenericIndicatorPreset): void =>
   miniWidget.value.options.variableUnit = template.variableUnit
   miniWidget.value.options.variableMultiplier = template.variableMultiplier
 }
-
-// Pops open the config menu if the mini-widget is a non-configured VeryGenericIndicator
-watchEffect(() => {
-  if (miniWidget.value.component === 'VeryGenericIndicator' && miniWidget.value.options.displayName === '') {
-    miniWidget.value.managerVars.configMenuOpen = true
-  }
-})
 </script>
 
-<style>
+<style scoped>
 .close-icon {
   position: fixed;
-  top: 0px;
-  right: 5px;
+  top: 5px;
+  right: 10px;
   cursor: pointer;
   color: white;
-  font-size: 24px;
+  font-size: 26px;
   border-radius: 8px;
 }
 
-.configModal {
+.config-modal {
   position: absolute;
   top: 50%;
   left: 50%;
   margin-right: -50%;
   transform: translate(-50%, -50%);
   height: fit-content;
-  background-color: rgba(71, 85, 105, 0.4);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 0 20px 5px rgba(0, 0, 0, 0.25);
   border-radius: 5px;
+}
+
+.scroll-container {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scroll-text {
+  animation: 3s linear 1s infinite alternate slidein;
+}
+
+@keyframes slidein {
+  25%,
+  50% {
+    transform: translateX(0%);
+  }
+  90%,
+  100% {
+    transform: translateX(-50%);
+  }
 }
 </style>

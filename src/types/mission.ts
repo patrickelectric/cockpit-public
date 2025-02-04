@@ -16,6 +16,8 @@ export enum AltitudeReferenceType {
 
 export type WaypointCoordinates = [number, number]
 
+export type ContextMenuTypes = 'survey' | 'waypoint' | 'map'
+
 export type Waypoint = {
   /**
    * Unique identification for the waypoint.
@@ -77,6 +79,40 @@ export type CockpitMission = {
    * The waypoints of the mission
    */
   waypoints: Waypoint[]
+}
+
+/**
+ * Survey object that contains the information about the survey to be performed.
+ */
+export interface Survey {
+  /**
+   * Unique identification for the survey.
+   */
+  id: string
+  /**
+   * Coordinates of the polygon that will be surveyed.
+   */
+  polygonCoordinates: WaypointCoordinates[]
+  /**
+   * Density of the scan.
+   */
+  distanceBetweenLines: number
+  /**
+   * Angle of the survey lines.
+   */
+  surveyLinesAngle: number
+  /**
+   * Executable mission waypoints.
+   */
+  waypoints: Waypoint[]
+}
+
+// TODO - Replace leaflet types with agnostic types
+export type SurveyPolygon = {
+  /**
+   * The coordinates of the polygon that will be converted into a survey.
+   */
+  polygonPositions: WaypointCoordinates[]
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

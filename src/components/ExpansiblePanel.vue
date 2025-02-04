@@ -1,6 +1,6 @@
 <template>
   <div class="text-white w-full">
-    <div class="flex flex-col align-start">
+    <div class="flex flex-col align-start" :class="isElevationEffect && showElevationEffect ? 'elevation-5' : ''">
       <v-divider v-if="!noTopDivider" centered class="opacity-10 border-[#fafafa] w-full" />
       <div
         :class="[
@@ -10,17 +10,21 @@
         @click="togglePanel"
       >
         <div
-          class="flex flex-row align-center"
+          class="flex flex-row w-full align-center"
           :class="isCompact ? 'gap-x-[1vw] py-[0.8vh]' : 'gap-x-[3vw] py-[1.5vh]'"
         >
-          <div>
-            <div class="flex flex-row whitespace-nowrap">
+          <div class="flex flex-col w-full">
+            <div
+              class="flex flex-row whitespace-nowrap"
+              :class="isChevronInverted ? 'justify-between w-full' : 'justify-start'"
+            >
               <v-icon
+                v-if="!isChevronInverted"
                 :size="isCompact ? 20 : 24"
                 :icon="isPanelExpanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
                 :class="interfaceStore.isOnSmallScreen ? '-mt-[2px] mr-[3px]' : 'mt-[2px] mr-[2px]'"
               />
-              <div class="flex flex-col">
+              <div class="flex w-full flex-col">
                 <div
                   class="font-semibold"
                   :class="interfaceStore.isOnSmallScreen ? `text-[${textSize - 4}px]` : `text-[${textSize}px]`"
@@ -28,24 +32,30 @@
                   <slot name="title" />
                 </div>
               </div>
+              <v-icon
+                v-if="isChevronInverted"
+                :size="isCompact ? 20 : 24"
+                :icon="isPanelExpanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                :class="interfaceStore.isOnSmallScreen ? '-mt-[2px] mr-[3px]' : 'mt-[2px] mr-[2px]'"
+              />
             </div>
             <div
-              class="font-normal"
+              class="font-normal opacity-80"
               :class="interfaceStore.isOnSmallScreen ? `text-[${textSize - 8}px]` : `text-[${textSize - 4}px]`"
             >
               <slot name="subtitle" />
             </div>
           </div>
         </div>
-        <div class="flex w-full justify-between ml-4">
+        <div class="flex justify-between ml-4">
           <div v-if="hasInfoSlot" class="flex items-center w-[10%]">
             <v-btn class="ml-auto rounded-full" size="small" color="transparent" elevation="0" @click.stop="toggleInfo">
               <v-icon :size="interfaceStore.isOnSmallScreen ? 15 : 18" color="white" icon="mdi-information-outline" />
             </v-btn>
           </div>
-          <div v-if="hasWarningSlot" class="flex justify-end items-center w-[10%] relative">
+          <div v-if="hasWarningSlot" class="flex justify-end items-center w-[10%]">
             <v-btn
-              class="ml-auto w-[10px] rounded-full"
+              class="rounded-full relative overflow-hidden"
               size="small"
               color="transparent"
               elevation="0"
@@ -104,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, useSlots, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useSlots, watch } from 'vue'
 
 import { useAppInterfaceStore } from '@/stores/appInterface'
 
@@ -112,15 +122,15 @@ const interfaceStore = useAppInterfaceStore()
 
 const props = defineProps<{
   /**
-   *
+   * Removes the top divider.
    */
   noTopDivider?: boolean
   /**
-   *
+   * Removes the bottom divider.
    */
   noBottomDivider?: boolean
   /**
-   *
+   * Whether the panel is expanded.
    */
   isExpanded?: boolean
   /**
@@ -139,6 +149,14 @@ const props = defineProps<{
    * Disable hover effect on the panel header.
    */
   hoverEffect?: boolean
+  /**
+   * Invert horizontal position of the chevron icon.
+   */
+  invertChevron?: boolean
+  /**
+   * Elevation effect on the panel header.
+   */
+  elevationEffect?: boolean
 }>()
 
 const slots = useSlots()
@@ -152,14 +170,28 @@ const isMarkExpanded = ref(props.markExpanded ?? false)
 const isCompact = ref(props.compact ?? false)
 const isDarkenContent = ref(props.darkenContent ?? false)
 const isHoverEffect = ref(props.hoverEffect ?? false)
+const isChevronInverted = ref(props.invertChevron ?? false)
+const isElevationEffect = ref(props.elevationEffect ?? false)
 
 const content = ref<HTMLElement | null>(null)
 const infoContent = ref<HTMLElement | null>(null)
 const warningContent = ref<HTMLElement | null>(null)
 const animateWarning = ref(true)
+const showElevationEffect = ref(isPanelExpanded.value || false)
+
+const emit = defineEmits(['update:isExpanded'])
 
 const togglePanel = (): void => {
-  isPanelExpanded.value = !isPanelExpanded.value
+  if (isPanelExpanded.value) {
+    isPanelExpanded.value = false
+    setTimeout(() => {
+      showElevationEffect.value = false
+    }, 300)
+  } else {
+    showElevationEffect.value = true
+    isPanelExpanded.value = true
+  }
+  emit('update:isExpanded', isPanelExpanded.value)
 }
 
 const textSize = computed(() => {
@@ -174,6 +206,13 @@ const toggleWarning = (): void => {
   animateWarning.value = false
   isWarningOpen.value = !isWarningOpen.value
 }
+
+watch(
+  () => props.isExpanded,
+  (newValue) => {
+    isPanelExpanded.value = newValue ?? false
+  }
+)
 
 watch(isPanelExpanded, (newValue) => {
   if (content.value) {
@@ -214,6 +253,21 @@ watch(isWarningOpen, (newValue) => {
   }
 })
 
+const hasWarningSlot = ref(false)
+const warningSlotObserver = ref<MutationObserver | null>(null)
+const updateHasWarningSlot = (): void => (hasWarningSlot.value = !!slots.warning?.())
+const hasInfoSlot = ref(false)
+const infoSlotObserver = ref<MutationObserver | null>(null)
+const updateHasInfoSlot = (): void => (hasInfoSlot.value = !!slots.info?.())
+
+const setupSlotObservers = (): void => {
+  warningSlotObserver.value = new MutationObserver(updateHasWarningSlot)
+  warningSlotObserver.value.observe(warningContent.value, { attributes: true, childList: true, subtree: true })
+
+  infoSlotObserver.value = new MutationObserver(updateHasInfoSlot)
+  infoSlotObserver.value.observe(infoContent.value, { attributes: true, childList: true, subtree: true })
+}
+
 onMounted(() => {
   if (content.value && !isPanelExpanded.value) {
     content.value.style.maxHeight = '0px'
@@ -224,10 +278,16 @@ onMounted(() => {
   if (warningContent.value && !isWarningOpen.value) {
     warningContent.value.style.maxHeight = '0px'
   }
+
+  updateHasWarningSlot()
+  updateHasInfoSlot()
+  setupSlotObservers()
 })
 
-const hasInfoSlot = computed(() => !!slots.info?.())
-const hasWarningSlot = computed(() => !!slots.warning?.())
+onBeforeUnmount(() => {
+  if (warningSlotObserver.value) warningSlotObserver.value.disconnect()
+  if (infoSlotObserver.value) infoSlotObserver.value.disconnect()
+})
 </script>
 
 <style scoped>
@@ -268,12 +328,13 @@ const hasWarningSlot = computed(() => !!slots.warning?.())
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 100px;
-  height: 100px;
+  width: 60px;
+  height: 60px;
   background: rgba(255, 255, 0, 0.2);
   border-radius: 50%;
   transform: translate(-50%, -50%) scale(0);
   animation: rippleEffect 1.5s infinite;
+  pointer-events: none;
 }
 
 @keyframes rippleEffect {

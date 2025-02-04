@@ -1,5 +1,5 @@
 <template>
-  <div class="relative flex-grow mx-1 my-1.5 max-w-[25%]">
+  <div class="mx-1 my-1.5 w-[500px]">
     <div
       ref="currentAlertBar"
       class="flex items-center justify-between p-1 overflow-hidden rounded cursor-pointer select-none whitespace-nowrap bg-slate-800/75"
@@ -16,7 +16,7 @@
       :class="{ 'opacity-0 invisible': !isShowingExpandedAlerts }"
     >
       <div v-for="(alert, i) in sortedAlertsReversed" :key="alert.time_created.toISOString()">
-        <div v-tooltip.right="alert.message" class="flex items-center justify-between whitespace-nowrap">
+        <div :title="alert.message" class="flex items-center justify-between whitespace-nowrap">
           <p class="mx-1 overflow-hidden text-lg font-medium leading-none text-ellipsis">{{ alert.message }}</p>
           <div
             class="flex flex-col justify-center mx-1 font-mono text-xs font-semibold leading-3 text-right text-gray-100"

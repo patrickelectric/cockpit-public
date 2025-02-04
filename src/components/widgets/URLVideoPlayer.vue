@@ -11,13 +11,13 @@
     >
       <source :src="widget.options.source" />
     </video>
-    <v-dialog v-model="widget.managerVars.configMenuOpen" min-width="400" max-width="35%">
-      <v-card class="pa-2">
-        <v-card-title>Video Source</v-card-title>
+    <v-dialog v-model="widgetStore.widgetManagerVars(widget.hash).configMenuOpen" min-width="400" max-width="35%">
+      <v-card class="pa-2" :style="interfaceStore.globalGlassMenuStyles">
+        <v-card-title class="text-center">Video Source</v-card-title>
         <v-card-text>
+          <a>Video Source</a>
           <v-text-field
-            label="Video Source"
-            variant="underlined"
+            variant="filled"
             :model-value="widget.options.source"
             outlined
             @change="widget.options.source = $event.srcElement.value"
@@ -37,8 +37,10 @@
             <v-checkbox v-model="widget.options.muted" label="Muted" hide-details />
           </div>
         </v-card-text>
-        <v-card-actions>
-          <v-btn color="primary" @click="widget.managerVars.configMenuOpen = false">Close</v-btn>
+        <v-card-actions class="flex justify-end">
+          <v-btn color="white" @click="widgetStore.widgetManagerVars(widget.hash).configMenuOpen = false">
+            Close
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -49,7 +51,13 @@
 import { onBeforeMount, ref, toRefs, watch } from 'vue'
 
 import Dropdown from '@/components/Dropdown.vue'
+import { useAppInterfaceStore } from '@/stores/appInterface'
+import { useWidgetManagerStore } from '@/stores/widgetManager'
 import type { Widget } from '@/types/widgets'
+
+const interfaceStore = useAppInterfaceStore()
+
+const widgetStore = useWidgetManagerStore()
 
 const props = defineProps<{
   /**
@@ -61,7 +69,6 @@ const widget = toRefs(props).widget
 
 const videoPlayer = ref()
 watch(widget.value.options, () => {
-  console.log(widget.value.options.source)
   videoPlayer.value.pause()
   videoPlayer.value.play()
 })

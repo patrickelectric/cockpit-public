@@ -1,23 +1,31 @@
-import { useTimestamp, watchThrottled } from '@vueuse/core'
+import { useStorage, useTimestamp, watchThrottled } from '@vueuse/core'
+import { differenceInSeconds } from 'date-fns'
 import { defineStore } from 'pinia'
+import { v4 as uuid } from 'uuid'
 import { computed, reactive, ref, watch } from 'vue'
 
 import { defaultGlobalAddress } from '@/assets/defaults'
 import { useBlueOsStorage } from '@/composables/settingsSyncer'
+import { useSnackbar } from '@/composables/snackbar'
+import { DataLakeVariable, getDataLakeVariableInfo, setDataLakeVariableData } from '@/libs/actions/data-lake'
+import { createDataLakeVariable } from '@/libs/actions/data-lake'
 import { altitude_setpoint } from '@/libs/altitude-slider'
-import { getCpuTempCelsius, getStatus } from '@/libs/blueos'
+import {
+  getCpuTempCelsius,
+  getKeyDataFromCockpitVehicleStorage,
+  getStatus,
+  setKeyDataOnCockpitVehicleStorage,
+} from '@/libs/blueos'
 import * as Connection from '@/libs/connection/connection'
 import { ConnectionManager } from '@/libs/connection/connection-manager'
 import type { Package } from '@/libs/connection/m2r/messages/mavlink2rest'
 import { MavAutopilot, MAVLinkType, MavType } from '@/libs/connection/m2r/messages/mavlink2rest-enum'
 import type { Message } from '@/libs/connection/m2r/messages/mavlink2rest-message'
-import {
-  availableCockpitActions,
-  CockpitActionsManager,
-  registerActionCallback,
-} from '@/libs/joystick/protocols/cockpit-actions'
+import eventTracker from '@/libs/external-telemetry/event-tracking'
+import { availableCockpitActions, registerActionCallback } from '@/libs/joystick/protocols/cockpit-actions'
 import { MavlinkManualControlManager } from '@/libs/joystick/protocols/mavlink-manual-control'
 import type { ArduPilot } from '@/libs/vehicle/ardupilot/ardupilot'
+import { CustomMode } from '@/libs/vehicle/ardupilot/ardurover'
 import type { ArduPilotParameterSetData } from '@/libs/vehicle/ardupilot/types'
 import * as Protocol from '@/libs/vehicle/protocol/protocol'
 import type {
@@ -58,21 +66,38 @@ const defaultRtcConfiguration = {
   iceServers: [],
 } as RTCConfiguration
 
+const { showSnackbar } = useSnackbar()
+
 export const useMainVehicleStore = defineStore('main-vehicle', () => {
   const controllerStore = useControllerStore()
   const widgetStore = useWidgetManagerStore()
   const ws_protocol = location?.protocol === 'https:' ? 'wss' : 'ws'
+  const http_protocol = location?.protocol === 'https:' ? 'https' : 'http'
 
   const cpuLoad = ref<number>()
-  const globalAddress = useBlueOsStorage('cockpit-vehicle-address', defaultGlobalAddress)
+  const rawGlobalAddress = useStorage('cockpit-vehicle-address', defaultGlobalAddress)
+  const globalAddress = computed({
+    get() {
+      if (rawGlobalAddress.value.includes('://')) {
+        return rawGlobalAddress.value.split('://')[1]
+      }
+      return rawGlobalAddress.value
+    },
+    set(newValue) {
+      rawGlobalAddress.value = newValue
+    },
+  })
 
-  const defaultMainConnectionURI = ref<string>(`${ws_protocol}://${globalAddress.value}/mavlink2rest/ws/mavlink`)
-  const defaultWebRTCSignallingURI = ref<string>(`${ws_protocol}://${globalAddress.value}:6021/`)
-  const customMainConnectionURI = useBlueOsStorage('cockpit-vehicle-custom-main-connection-uri', {
-    data: defaultMainConnectionURI.value,
+  const defaultMAVLink2RestWebsocketURI = computed(
+    () => `${ws_protocol}://${globalAddress.value}/mavlink2rest/ws/mavlink`
+  )
+  const defaultMAVLink2RestHttpURI = computed(() => `${http_protocol}://${globalAddress.value}/mavlink2rest/v1/mavlink`)
+  const defaultWebRTCSignallingURI = computed(() => `${ws_protocol}://${globalAddress.value}:6021/`)
+  const customMAVLink2RestWebsocketURI = useStorage('cockpit-vehicle-custom-main-connection-uri', {
+    data: defaultMAVLink2RestWebsocketURI.value,
     enabled: false,
   } as CustomParameter<string>)
-  const customWebRTCSignallingURI = useBlueOsStorage('cockpit-vehicle-custom-webrtc-signalling-uri', {
+  const customWebRTCSignallingURI = useStorage('cockpit-vehicle-custom-webrtc-signalling-uri', {
     data: defaultWebRTCSignallingURI.value,
     enabled: false,
   } as CustomParameter<string>)
@@ -81,6 +106,9 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     enabled: false,
   })
 
+  const lastConnectedVehicleId = localStorage.getItem('cockpit-last-connected-vehicle-id') || undefined
+  const currentlyConnectedVehicleId = ref<string | undefined>()
+
   const lastHeartbeat = ref<Date>()
   const firmwareType = ref<MavAutopilot>()
   const vehicleType = ref<MavType>()
@@ -88,6 +116,7 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
   const attitude: Attitude = reactive({} as Attitude)
   const coordinates: Coordinates = reactive({} as Coordinates)
   const powerSupply: PowerSupply = reactive({} as PowerSupply)
+  const instantaneousWatts = ref<number | undefined>(undefined)
   const velocity: Velocity = reactive({} as Velocity)
   const mainVehicle = ref<ArduPilot | undefined>(undefined)
   const isArmed = ref<boolean | undefined>(undefined)
@@ -100,15 +129,18 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
   const genericVariables: Record<string, unknown> = reactive({})
   const availableGenericVariables = ref<string[]>([])
   const usedGenericVariables = ref<string[]>([])
+  const vehicleArmingTime = ref<Date | undefined>(undefined)
 
   const mode = ref<string | undefined>(undefined)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const modes = ref<Map<string, any>>()
 
-  const mainConnectionURI = computed(() => {
-    const queryURI = new URLSearchParams(window.location.search).get('mainConnectionURI')
-    const customURI = customMainConnectionURI.value.enabled ? customMainConnectionURI.value.data : undefined
-    return new Connection.URI(queryURI ?? customURI ?? defaultMainConnectionURI.value)
+  const MAVLink2RestWebsocketURI = computed(() => {
+    const queryURI = new URLSearchParams(window.location.search).get('MAVLink2RestWebsocketURI')
+    const customURI = customMAVLink2RestWebsocketURI.value.enabled
+      ? customMAVLink2RestWebsocketURI.value.data
+      : undefined
+    return new Connection.URI(queryURI ?? customURI ?? defaultMAVLink2RestWebsocketURI.value)
   })
 
   const webRTCSignallingURI = computed(() => {
@@ -124,6 +156,46 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
   const isVehicleOnline = computed(() => {
     return lastHeartbeat.value !== undefined && new Date(timeNow.value).getTime() - lastHeartbeat.value.getTime() < 5000
   })
+
+  watch(isVehicleOnline, (isOnline) => {
+    if (isOnline) return
+    currentlyConnectedVehicleId.value = undefined
+  })
+
+  watch(
+    globalAddress,
+    (newAddress) => {
+      if (newAddress === undefined) return
+
+      // Register vehicle address variables if they don't exist
+      const vehicleAddressVariableId = 'vehicle-address'
+      if (!getDataLakeVariableInfo(vehicleAddressVariableId)) {
+        const vehicleAddressVariable = new DataLakeVariable(
+          vehicleAddressVariableId,
+          'Vehicle Address',
+          'string',
+          'The address of the vehicle, without protocol.'
+        )
+        createDataLakeVariable(vehicleAddressVariable)
+      }
+
+      const vehicleMavlink2RestHttpEndpointVariableId = 'mavlink2rest-http-endpoint'
+      if (!getDataLakeVariableInfo(vehicleMavlink2RestHttpEndpointVariableId)) {
+        const vehicleMavlink2RestHttpEndpointVariable = new DataLakeVariable(
+          vehicleMavlink2RestHttpEndpointVariableId,
+          'MAVLink2REST HTTP Endpoint',
+          'string',
+          'The HTTP endpoint of the vehicle MAVLink2REST service.'
+        )
+        createDataLakeVariable(vehicleMavlink2RestHttpEndpointVariable)
+      }
+
+      // Update the variables with the new address
+      setDataLakeVariableData(vehicleAddressVariableId, newAddress)
+      setDataLakeVariableData(vehicleMavlink2RestHttpEndpointVariableId, defaultMAVLink2RestHttpURI.value)
+    },
+    { immediate: true }
+  )
 
   const rtcConfiguration = computed(() => {
     const queryWebRtcConfiguration = new URLSearchParams(window.location.search).get('webRTCConfiguration')
@@ -226,11 +298,21 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
       throw new Error('No vehicle available to execute go to command.')
     }
 
+    if (mainVehicle.value.firmware() !== Vehicle.Firmware.ArduPilot) {
+      throw new Error('Go to command is not supported by this vehicle.')
+    }
+
+    console.log(mainVehicle.value.type())
+    console.log(mainVehicle.value.mode())
+    if (mainVehicle.value.type() === Vehicle.Type.Rover && mainVehicle.value.mode() !== CustomMode.GUIDED) {
+      throw new Error('Vehicle should be in GUIDED mode to execute "go to" commands.')
+    }
+
     const waypoint = new Coordinates()
     waypoint.latitude = latitude
     waypoint.altitude = alt
     waypoint.longitude = longitude
-    mainVehicle.value.goTo(hold, acceptanceRadius, passRadius, yaw, waypoint)
+    await mainVehicle.value.goTo(hold, acceptanceRadius, passRadius, yaw, waypoint)
   }
 
   /**
@@ -274,13 +356,16 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
    */
   async function clearMissions(): Promise<void> {
     mainVehicle.value?.clearMissions()
+    showSnackbar({ message: 'Mission deleted from vehicle', variant: 'info' })
   }
 
   /**
    * Start mission that is on the vehicle
    */
   async function startMission(): Promise<void> {
-    mainVehicle.value?.startMission()
+    if (!mainVehicle.value) throw new Error('No vehicle available to start mission.')
+
+    await mainVehicle.value.startMission()
   }
 
   /**
@@ -317,26 +402,24 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     usedGenericVariables.value.forEach((variable) => {
       mainVehicle.value?.registerUsageOfMessageType(variable)
     })
-
-    console.log('List of tracked generic variables udpated: ', usedGenericVariables.value)
   }
 
   ConnectionManager.onMainConnection.add(() => {
     const newMainConnection = ConnectionManager.mainConnection()
     console.log('Main connection changed:', newMainConnection?.uri().toString())
     if (newMainConnection !== undefined) {
-      customMainConnectionURI.value.data = newMainConnection.uri().toString()
+      customMAVLink2RestWebsocketURI.value.data = newMainConnection.uri().toString()
     }
   })
 
-  ConnectionManager.addConnection(mainConnectionURI.value, Protocol.Type.MAVLink)
+  ConnectionManager.addConnection(MAVLink2RestWebsocketURI.value, Protocol.Type.MAVLink)
 
   const getAutoPilot = (vehicles: WeakRef<Vehicle.Abstract>[]): ArduPilot => {
     const vehicle = vehicles?.last()?.deref()
     return (vehicle as ArduPilot) || undefined
   }
 
-  VehicleFactory.onVehicles.once((vehicles: WeakRef<Vehicle.Abstract>[]) => {
+  VehicleFactory.onVehicles.once(async (vehicles: WeakRef<Vehicle.Abstract>[]) => {
     mainVehicle.value = getAutoPilot(vehicles)
     modes.value = mainVehicle.value.modesAvailable()
     icon.value = mainVehicle.value.icon()
@@ -350,7 +433,19 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
       Object.assign(attitude, newAttitude)
     })
     mainVehicle.value.onArm.add((armed: boolean) => {
+      const wasArmed = isArmed.value
       isArmed.value = armed
+
+      // If the vehicle was already in the desired state or it's the first time we are checking, do not capture an event
+      if (wasArmed === undefined || wasArmed === armed) return
+
+      if (armed) {
+        vehicleArmingTime.value = new Date()
+        eventTracker.capture('Vehicle armed')
+      } else {
+        const armDurationInSeconds = differenceInSeconds(new Date(), vehicleArmingTime.value ?? new Date())
+        eventTracker.capture('Vehicle disarmed', { armDurationInSeconds })
+      }
     })
     mainVehicle.value.onTakeoff.add((inAir: boolean) => {
       flying.value = inAir
@@ -366,6 +461,11 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     })
     mainVehicle.value.onPowerSupply.add((newPowerSupply: PowerSupply) => {
       Object.assign(powerSupply, newPowerSupply)
+
+      instantaneousWatts.value =
+        powerSupply.voltage !== undefined && powerSupply.current !== undefined
+          ? powerSupply.voltage * powerSupply.current
+          : undefined
     })
     mainVehicle.value.onStatusText.add((newStatusText: StatusText) => {
       Object.assign(statusText, newStatusText)
@@ -378,10 +478,45 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
       availableGenericVariables.value = mainVehicle.value?._availableGenericVariablesdMessagePaths ?? []
     })
 
+    // Get the ID for the currently connected vehicle, or create one if it does not exist
+    // Try this every 5 seconds until we have an ID
+    const updateVehicleId = async (): Promise<void> => {
+      try {
+        const maybeId = await getKeyDataFromCockpitVehicleStorage(globalAddress.value, 'cockpit-vehicle-id')
+        if (typeof maybeId !== 'string') {
+          throw new Error('Vehicle ID is not a string.')
+        }
+        currentlyConnectedVehicleId.value = maybeId
+        localStorage.setItem('cockpit-last-connected-vehicle-id', currentlyConnectedVehicleId.value)
+      } catch (idFetchError) {
+        console.error(`Could not get vehicle ID from storage. ${(idFetchError as Error).message}`)
+
+        const newVehicleId = uuid()
+        console.log(`Setting new vehicle ID: ${newVehicleId}`)
+        try {
+          await setKeyDataOnCockpitVehicleStorage(globalAddress.value, 'cockpit-vehicle-id', newVehicleId)
+          currentlyConnectedVehicleId.value = newVehicleId
+          localStorage.setItem('cockpit-last-connected-vehicle-id', currentlyConnectedVehicleId.value)
+        } catch (idSetError) {
+          console.error(`Could not set vehicle ID in storage. ${(idSetError as Error).message}`)
+          console.log('Will try setting the vehicle ID again in 5 seconds...')
+          setTimeout(updateVehicleId, 5000)
+        }
+      }
+    }
+
+    updateVehicleId()
+
     setInterval(async () => {
-      const blueosStatus = await getStatus(globalAddress.value)
-      // If blueos is not available, do not try to get data from it
-      if (!blueosStatus) return
+      try {
+        const blueosStatus = await getStatus(globalAddress.value)
+        if (!blueosStatus) {
+          throw new Error('BlueOS is not available.')
+        }
+      } catch (error) {
+        console.error(error)
+        return
+      }
 
       const blueosVariablesAddresses = {
         cpuTemp: 'blueos/cpu/tempC',
@@ -394,13 +529,16 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
       })
 
       if (usedGenericVariables.value.includes(blueosVariablesAddresses.cpuTemp)) {
-        getCpuTempCelsius(globalAddress.value).then((temp) => {
+        try {
+          const temp = await getCpuTempCelsius(globalAddress.value)
           Object.assign(genericVariables, { ...genericVariables, ...{ [blueosVariablesAddresses.cpuTemp]: temp } })
-        })
+        } catch (error) {
+          console.error(error)
+        }
       }
     }, 1000)
 
-    mainVehicle.value.onMAVLinkMessage.add(MAVLinkType.HEARTBEAT, (pack: Package) => {
+    mainVehicle.value.onIncomingMAVLinkMessage.add(MAVLinkType.HEARTBEAT, (pack: Package) => {
       if (pack.header.component_id != 1) {
         return
       }
@@ -438,6 +576,20 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     })
   })
 
+  const listenToIncomingMessages = (messageType: string, callback: (pack: Package) => void): void => {
+    if (!mainVehicle.value) {
+      throw new Error('No vehicle available to listen for incoming messages.')
+    }
+    mainVehicle.value?.onIncomingMAVLinkMessage.add(messageType, callback)
+  }
+
+  const listenToOutgoingMessages = (messageType: string, callback: (pack: Package) => void): void => {
+    if (!mainVehicle.value) {
+      throw new Error('No vehicle available to listen for outgoing messages.')
+    }
+    mainVehicle.value?.onOutgoingMAVLinkMessage.add(messageType, callback)
+  }
+
   // Allow us to set custom commands to be used in the browser
   // Expert mode
   watch(mainVehicle, async (newVehicle) => {
@@ -459,9 +611,7 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
   })
 
   const mavlinkManualControlManager = new MavlinkManualControlManager()
-  const cockpitActionsManager = new CockpitActionsManager()
   controllerStore.registerControllerUpdateCallback(mavlinkManualControlManager.updateControllerData)
-  controllerStore.registerControllerUpdateCallback(cockpitActionsManager.updateControllerData)
 
   // Loop to send MAVLink Manual Control messages
   setInterval(() => {
@@ -476,13 +626,6 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     }
   }, 40)
   setInterval(() => sendGcsHeartbeat(), 1000)
-
-  // Loop to send Cockpit Action messages
-  setInterval(() => {
-    if (controllerStore.enableForwarding) {
-      cockpitActionsManager.sendCockpitActions()
-    }
-  }, 10)
 
   return {
     arm,
@@ -500,12 +643,14 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     clearMissions,
     startMission,
     globalAddress,
-    mainConnectionURI,
-    customMainConnectionURI,
-    defaultMainConnectionURI,
+    MAVLink2RestWebsocketURI,
+    customMAVLink2RestWebsocketURI,
+    defaultMAVLink2RestWebsocketURI,
     webRTCSignallingURI,
     customWebRTCSignallingURI,
     defaultWebRTCSignallingURI,
+    lastConnectedVehicleId,
+    currentlyConnectedVehicleId,
     cpuLoad,
     lastHeartbeat,
     firmwareType,
@@ -515,6 +660,7 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     coordinates,
     velocity,
     powerSupply,
+    instantaneousWatts,
     statusText,
     statusGPS,
     mode,
@@ -529,5 +675,7 @@ export const useMainVehicleStore = defineStore('main-vehicle', () => {
     genericVariables,
     availableGenericVariables,
     registerUsageOfGenericVariable,
+    listenToIncomingMessages,
+    listenToOutgoingMessages,
   }
 })

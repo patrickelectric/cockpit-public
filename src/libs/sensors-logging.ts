@@ -1,12 +1,14 @@
 import { differenceInMilliseconds, differenceInSeconds, format, intervalToDuration } from 'date-fns'
 import localforage from 'localforage'
-import Swal from 'sweetalert2'
 
 import { defaultSensorDataloggerProfile } from '@/assets/defaults'
+import { useInteractionDialog } from '@/composables/interactionDialog'
 import { useBlueOsStorage } from '@/composables/settingsSyncer'
+import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useMainVehicleStore } from '@/stores/mainVehicle'
 import { useMissionStore } from '@/stores/mission'
 
+import { unitAbbreviation } from './units'
 import { degrees } from './utils'
 
 /**
@@ -27,9 +29,11 @@ export enum DatalogVariable {
   missionName = 'Mission name',
   time = 'Time',
   date = 'Date',
+  instantaneousPower = 'Instantaneous power',
 }
 
 const logDateFormat = 'LLL dd, yyyy'
+const { showDialog } = useInteractionDialog()
 
 /**
  * Data for VeryGenericIndicator variables
@@ -231,7 +235,7 @@ class DataLogger {
    */
   startLogging(): void {
     if (this.logging()) {
-      Swal.fire({ title: 'Error', text: 'A log is already being generated.', icon: 'error', timer: 3000 })
+      console.warn('Tried to start logging but there was already a log being generated.')
       return
     }
 
@@ -239,6 +243,7 @@ class DataLogger {
 
     const vehicleStore = useMainVehicleStore()
     const missionStore = useMissionStore()
+    const interfaceStore = useAppInterfaceStore()
 
     const initialTime = new Date()
     const fileName = `Cockpit (${format(initialTime, `${logDateFormat} - HH꞉mm꞉ss O`)}).clog`
@@ -250,12 +255,17 @@ class DataLogger {
 
       const timeNowObj = { lastChanged: timeNow.getTime() }
 
+      const unitPrefs = interfaceStore.displayUnitPreferences
+
+      const depthValue = (-vehicleStore.altitude.msl?.to(unitPrefs.distance).toJSON().value).toPrecision(4)
+      const depthUnit = unitAbbreviation[unitPrefs.distance]
+
       /* eslint-disable vue/max-len, prettier/prettier, max-len */
       let variablesData: ExtendedVariablesData = {
         [DatalogVariable.roll]: { value: `${degrees(vehicleStore.attitude.roll)?.toFixed(1)} °`, ...timeNowObj },
         [DatalogVariable.pitch]: { value: `${degrees(vehicleStore.attitude.pitch)?.toFixed(1)} °`, ...timeNowObj },
         [DatalogVariable.heading]: { value: `${degrees(vehicleStore.attitude.yaw)?.toFixed(1)} °`, ...timeNowObj },
-        [DatalogVariable.depth]: { value: `${vehicleStore.altitude.msl?.toPrecision(4)} m`, ...timeNowObj },
+        [DatalogVariable.depth]: { value: `${depthValue} ${depthUnit}`, ...timeNowObj },
         [DatalogVariable.mode]: { value: vehicleStore.mode || 'Unknown', ...timeNowObj },
         [DatalogVariable.batteryVoltage]: { value: `${vehicleStore.powerSupply.voltage?.toFixed(2)} V` || 'Unknown', ...timeNowObj },
         [DatalogVariable.batteryCurrent]: { value: `${vehicleStore.powerSupply.current?.toFixed(2)} A` || 'Unknown', ...timeNowObj },
@@ -266,6 +276,7 @@ class DataLogger {
         [DatalogVariable.missionName]: { value: missionStore.missionName || 'Cockpit', hideLabel: true, ...timeNowObj },
         [DatalogVariable.time]: { value: format(timeNow, 'HH:mm:ss O'), hideLabel: true, ...timeNowObj },
         [DatalogVariable.date]: { value: format(timeNow, 'LLL dd, yyyy'), hideLabel: true, ...timeNowObj },
+        [DatalogVariable.instantaneousPower]: { value: `${vehicleStore.instantaneousWatts?.toFixed(1)} W` || 'Unknown', ...timeNowObj },
       }
 
       /* eslint-enable vue/max-len, prettier/prettier, max-len */
@@ -313,7 +324,7 @@ class DataLogger {
    */
   stopLogging(): void {
     if (!this.logging()) {
-      Swal.fire({ title: 'Error', text: 'No log is being generated.', icon: 'error', timer: 3000 })
+      console.warn('Tried to stop logging but no log was being generated.')
       return
     }
 
@@ -334,7 +345,7 @@ class DataLogger {
    */
   setInterval(interval: number): void {
     if (interval < 1) {
-      Swal.fire({ text: 'Minimum log interval is 1 millisecond (1000 Hz).', icon: 'error' })
+      showDialog({ message: 'Minimum log interval is 1 millisecond (1000 Hz).', variant: 'error' })
       return
     }
 
@@ -347,7 +358,7 @@ class DataLogger {
    */
   setFrequency(frequency: number): void {
     if (frequency > 1000 || frequency < 0.1) {
-      Swal.fire({ text: 'Log frequency should stay between 0.1 Hz and 1000 Hz.', icon: 'error' })
+      showDialog({ message: 'Log frequency should stay between 0.1 Hz and 1000 Hz.', variant: 'error' })
       return
     }
 

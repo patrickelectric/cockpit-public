@@ -1,4 +1,47 @@
+import { CockpitAction } from '@/libs/joystick/protocols/cockpit-actions'
+
 import type { Point2D, SizeRect2D } from './general'
+
+/**
+ * Widget configuration object as received from BlueOS or another external source
+ */
+export interface ExternalWidgetSetupInfo {
+  /**
+   * Name of the widget, this is displayed on edit mode widget browser
+   */
+  name: string
+  /**
+   * The URL at which the widget is located
+   * This is expected to be an absolute url
+   */
+  iframe_url: string
+
+  /**
+   * The icon of the widget, this is displayed on the widget browser
+   */
+  iframe_icon: string
+}
+
+/**
+ * Internal data used for setting up a new widget. This includes WidgetType, a custom name, options, and icon
+ */ export interface InternalWidgetSetupInfo {
+  /**
+   *  Widget type
+   */
+  component: WidgetType
+  /**
+   *  Widget name, this will be displayed on edit mode
+   */
+  name: string
+  /**
+   *  Widget options, this is the configuration that will be passed to the widget when it is created
+   */
+  options: Record<string, unknown>
+  /**
+   *  Widget icon, this is the icon that will be displayed on the widget browser
+   */
+  icon: string
+}
 
 /**
  * Available components to be used in the Widget system
@@ -7,12 +50,15 @@ import type { Point2D, SizeRect2D } from './general'
 export enum WidgetType {
   Attitude = 'Attitude',
   Compass = 'Compass',
-  DepthHUD = 'DepthHUD',
   CompassHUD = 'CompassHUD',
+  CustomWidgetBase = 'CustomWidgetBase',
+  DepthHUD = 'DepthHUD',
+  DoItYourself = 'DoItYourself',
   IFrame = 'IFrame',
   ImageView = 'ImageView',
   Map = 'Map',
   MiniWidgetsBar = 'MiniWidgetsBar',
+  Plotter = 'Plotter',
   URLVideoPlayer = 'URLVideoPlayer',
   VideoPlayer = 'VideoPlayer',
   VirtualHorizon = 'VirtualHorizon',
@@ -23,11 +69,14 @@ export enum WidgetType {
  * The enum value is equal to the component's filename, without the '.vue' extension
  */
 export enum MiniWidgetType {
+  Alerter = 'Alerter',
   ArmerButton = 'ArmerButton',
   BaseCommIndicator = 'BaseCommIndicator',
   BatteryIndicator = 'BatteryIndicator',
   ChangeAltitudeCommander = 'ChangeAltitudeCommander',
+  Clock = 'Clock',
   DepthIndicator = 'DepthIndicator',
+  MissionIdentifier = 'MissionIdentifier',
   RelativeAltitudeIndicator = 'RelativeAltitudeIndicator',
   TakeoffLandCommander = 'TakeoffLandCommander',
   VeryGenericIndicator = 'VeryGenericIndicator',
@@ -36,6 +85,538 @@ export enum MiniWidgetType {
   ModeSelector = 'ModeSelector',
   SatelliteIndicator = 'SatelliteIndicator',
   ViewSelector = 'ViewSelector',
+}
+
+/**
+ * Available elements to be used in the Custom Widget creator.
+ * The enum value is equal to the component's filename, without the '.vue' extension
+ */
+export enum CustomWidgetElementType {
+  Button = 'Button',
+  Checkbox = 'Checkbox',
+  Dial = 'Dial',
+  Dropdown = 'Dropdown',
+  Label = 'Label',
+  Slider = 'Slider',
+  Switch = 'Switch',
+}
+
+/**
+ * Available containers to be used in the Custom Widget creator.
+ */
+export enum CustomWidgetElementContainers {
+  Left0 = '0-left',
+  Left1 = '1-left',
+  Left2 = '2-left',
+  Left3 = '3-left',
+  Left4 = '4-left',
+  Left5 = '5-left',
+  Left6 = '6-left',
+  Left7 = '7-left',
+  Left8 = '8-left',
+  Left9 = '9-left',
+  Right0 = '0-right',
+  Right1 = '1-right',
+  Right2 = '2-right',
+  Right3 = '3-right',
+  Right4 = '4-right',
+  Right5 = '5-right',
+  Right6 = '6-right',
+  Right7 = '7-right',
+  Right8 = '8-right',
+  Right9 = '9-right',
+}
+
+export type SelectorOption = {
+  /**
+   * The name of the option
+   */
+  name: string
+  /**
+   * The value of the option
+   */
+  value: string
+}
+
+/**
+ * Options for the Cockpit Actions parameters
+ */
+export interface DataLakeVariable {
+  /**
+   * Parameter ID, equals to initial name of the parameter
+   */
+  id: string
+  /**
+   * Parameter name
+   */
+  name: string
+  /**
+   * Parameter type
+   */
+  type: 'string' | 'boolean' | 'number'
+  /**
+   * Parameter description
+   */
+  description?: string
+}
+
+/**
+ * Options for the Custom Widgets inner elements
+ */
+export type CustomWidgetElementOptions = {
+  /**
+   * Custom widget element - Label
+   */
+  [CustomWidgetElementType.Label]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable | null
+      /**
+       * Action parameter
+       */
+      dataLakeVariable: DataLakeVariable
+      /**
+       * Layout options
+       */
+      layout: {
+        /**
+         * The label text
+         */
+        text: string
+        /**
+         * The size of the label's font (in pixels)
+         */
+        textSize: number
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         * The weight of the label's font
+         */
+        weight: 'normal' | 'bold' | 'bolder' | 'lighter'
+        /**
+         * The decoration for the label's text
+         */
+        decoration: 'none' | 'underline' | 'line-through' | 'overline'
+        /**
+         * The color of the label's text
+         */
+        color: string
+      }
+    }
+  }
+  /**
+   * Custom widget element - Button
+   */
+  [CustomWidgetElementType.Button]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable['type'] | null
+      /**
+       * Action parameter
+       */
+      cockpitAction: CockpitAction
+      /**
+       * Layout options
+       */
+      layout: {
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         * The label of the button
+         */
+        label: string
+        /**
+         * The size of the button
+         */
+        buttonSize: 'small' | 'default' | 'large'
+        /**
+         * The color of the button
+         */
+        backgroundColor: string
+        /**
+         * The color of the button's text
+         */
+        textColor: string
+        /**
+         * The variant of the button
+         */
+        variant: 'text' | 'outlined' | 'flat' | 'elevated' | 'tonal' | 'plain'
+      }
+    }
+  }
+  /**
+   * Custom widget element - Checkbox
+   */
+  [CustomWidgetElementType.Checkbox]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable['type'] | null
+      /**
+       * Action parameter
+       */
+      dataLakeVariable: DataLakeVariable
+      /**
+       * Layout props for the element
+       */
+      layout: {
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         * The size of the checkbox
+         */
+        color: string
+        /**
+         * The label of the checkbox
+         */
+        label: string
+      }
+    }
+  }
+  /**
+   * Custom widget element - Dial
+   */
+  [CustomWidgetElementType.Dial]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable['type'] | null
+      /**
+       * Action parameter
+       */
+      dataLakeVariable: DataLakeVariable
+      /**
+       * Layout options
+       */
+      layout: {
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         * The size of the dial
+         */
+        size: 'small' | 'medium' | 'large'
+        /**
+         * The color of the dial
+         */
+        knobColor: string
+        /**
+         * The color of the knob's notch
+         */
+        notchColor: string
+        /**
+         * The minimum value of the dial
+         */
+        minValue: number
+        /**
+         * The maximum value of the dial
+         */
+        maxValue: number
+        /**
+         * The step value of the dial
+         */
+        showValue: boolean
+      }
+    }
+  }
+  /**
+   * Custom widget element - Dropdown
+   */
+  [CustomWidgetElementType.Dropdown]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable['type'] | null
+      /**
+       * Action parameter
+       */
+      dataLakeVariable: DataLakeVariable
+      /**
+       * Last selected value
+       */
+      lastSelected: SelectorOption
+      /**
+       * Layout options
+       */
+      layout: {
+        /**
+         * Alignment of the element
+         */
+        selectorOptions: SelectorOption[]
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         *  The size of the dropdown
+         */
+        width: number
+      }
+    }
+  }
+  /**
+   * Custom widget element - Slider
+   */
+  [CustomWidgetElementType.Slider]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable['type'] | null
+      /**
+       * Action parameter
+       */
+      dataLakeVariable: DataLakeVariable
+      /**
+       * Layout options
+       */
+      layout: {
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         * The size of the slider
+         */
+        size: 'small' | 'medium' | 'large'
+        /**
+         * The color of the slider
+         */
+        color: string
+        /**
+         * Apply color to the label
+         */
+        coloredLabel: boolean
+        /**
+         * The minimum value of the slider
+         */
+        minValue: number
+        /**
+         * The maximum value of the slider
+         */
+        maxValue: number
+        /**
+         * The step value of the slider
+         */
+        showTooltip: boolean
+        /**
+         * The label of the slider
+         */
+        label: string
+        /**
+         * The width of the label
+         */
+        labelWidth: number
+      }
+    }
+  }
+  /**
+   * Custom widget element - Switch
+   */
+  [CustomWidgetElementType.Switch]: {
+    /**
+     * Element hash
+     */
+    hash: string
+    /**
+     * Element name
+     */
+    name: string
+    /**
+     * Mark as custom mini widget
+     */
+    isCustomElement: boolean
+    /**
+     * Element options
+     */
+    options: {
+      /**
+       * Variable type
+       */
+      variableType: DataLakeVariable['type'] | null
+      /**
+       * Action parameter
+       */
+      dataLakeVariable: DataLakeVariable
+      /**
+       * Layout options
+       */
+      layout: {
+        /**
+         * Alignment of the element
+         */
+        align: 'start' | 'center' | 'end'
+        /**
+         * The color of the switch
+         */
+        color: string
+        /**
+         * The label of the switch
+         */
+        label: string
+      }
+    }
+  }
+}
+
+/**
+ * External variables used by the widget manager
+ */
+export type WidgetManagerVars = {
+  /**
+   * Number of times the widget was mounted
+   */
+  everMounted: boolean
+  /**
+   * If the configuration menu is open or not
+   */
+  configMenuOpen: boolean
+  /**
+   * If the widget should be allowed to move
+   */
+  allowMoving: boolean
+  /**
+   * Last widget X position when it wasn't maximized
+   */
+  lastNonMaximizedX: number
+  /**
+   * Last widget Y position when it wasn't maximized
+   */
+  lastNonMaximizedY: number
+  /**
+   * Last widget width when it wasn't maximized
+   */
+  lastNonMaximizedWidth: number
+  /**
+   * Last widget height when it wasn't maximized
+   */
+  lastNonMaximizedHeight: number
+  /**
+   * Wether thewidget should be highlited or not
+   */
+  highlighted: boolean
+}
+
+/**
+ * External variables used by the widget manager
+ */
+export type MiniWidgetManagerVars = {
+  /**
+   * Number of times the mini-widget was mounted
+   */
+  everMounted: boolean
+  /**
+   * If the configuration menu is open or not
+   */
+  configMenuOpen: boolean
+  /**
+   * Wether the mini-widget should be highlited or not
+   */
+  highlighted: boolean
 }
 
 export type Widget = {
@@ -63,43 +644,6 @@ export type Widget = {
    * Internal options of the widget
    */
   options: Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
-  /**
-   * External variables used by the widget manager
-   */
-  managerVars: {
-    /**
-     * Number of times the widget was mounted
-     */
-    everMounted: boolean
-    /**
-     * If the configuration menu is open or not
-     */
-    configMenuOpen: boolean
-    /**
-     * If the widget should be allowed to move
-     */
-    allowMoving: boolean
-    /**
-     * Last widget X position when it wasn't maximized
-     */
-    lastNonMaximizedX: number
-    /**
-     * Last widget Y position when it wasn't maximized
-     */
-    lastNonMaximizedY: number
-    /**
-     * Last widget width when it wasn't maximized
-     */
-    lastNonMaximizedWidth: number
-    /**
-     * Last widget height when it wasn't maximized
-     */
-    lastNonMaximizedHeight: number
-    /**
-     * Wether thewidget should be highlited or not
-     */
-    highlighted: boolean
-  }
 }
 
 export type MiniWidget = {
@@ -119,23 +663,69 @@ export type MiniWidget = {
    * Internal options of the widget
    */
   options: Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
+export type CustomWidget = {
   /**
-   * External variables used by the widget manager
+   * Unique identifier for the widget
    */
-  managerVars: {
+  hash: string
+  /**
+   * Component type of the widget
+   */
+  component: WidgetType
+  /**
+   * 2D position of the widget (top-left corner)
+   */
+  position: Point2D
+  /**
+   * Size of the widget box
+   */
+  size: SizeRect2D
+  /**
+   * Editable name for the widget
+   */
+  name: string
+  /**
+   * Internal options of the widget
+   */
+  elementContainers: Array<{
     /**
-     * Number of times the mini-widget was mounted
+     * Editable name for the container
      */
-    everMounted: boolean
+    name: CustomWidgetElementContainers
     /**
-     * If the configuration menu is open or not
+     * Array of elements that are stored in the container
      */
-    configMenuOpen: boolean
-    /**
-     * Wether the mini-widget should be highlited or not
-     */
-    highlighted: boolean
-  }
+    elements: CustomWidgetElement[]
+  }>
+  /**
+   * Internal options of the widget
+   */
+  options: Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
+export type CustomWidgetElement = {
+  /**
+   * Unique identifier for the widget
+   */
+  hash: string
+  /**
+   * Editable name for the widget
+   */
+  name: string
+  /**
+   * Component type of the element
+   */
+  component: CustomWidgetElementType
+  /**
+   * If the element is a custom mini widget
+   */
+  isCustomElement?: boolean
+  /**
+   * Internal options of the widget
+   */
+  options: Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 export type MiniWidgetContainer = {
@@ -143,6 +733,17 @@ export type MiniWidgetContainer = {
    * Array of widgets that are stored in the container
    */
   widgets: MiniWidget[]
+  /**
+   * Editable name for the container
+   */
+  name: string
+}
+
+export type CustomWidgetElementContainer = {
+  /**
+   * Array of widgets that are stored in the container
+   */
+  elements: CustomWidgetElement[]
   /**
    * Editable name for the container
    */
@@ -210,31 +811,52 @@ export type Profile = {
   name: string
 }
 
+export const isWidgetConfigurable: Record<WidgetType, boolean> = {
+  [WidgetType.Attitude]: true,
+  [WidgetType.Compass]: true,
+  [WidgetType.CompassHUD]: true,
+  [WidgetType.CustomWidgetBase]: true,
+  [WidgetType.DepthHUD]: true,
+  [WidgetType.DoItYourself]: true,
+  [WidgetType.IFrame]: true,
+  [WidgetType.ImageView]: true,
+  [WidgetType.Map]: true,
+  [WidgetType.MiniWidgetsBar]: false,
+  [WidgetType.Plotter]: true,
+  [WidgetType.URLVideoPlayer]: true,
+  [WidgetType.VideoPlayer]: true,
+  [WidgetType.VirtualHorizon]: false,
+}
+
+export const isMiniWidgetConfigurable: Record<MiniWidgetType, boolean> = {
+  [MiniWidgetType.Alerter]: false,
+  [MiniWidgetType.ArmerButton]: false,
+  [MiniWidgetType.BaseCommIndicator]: false,
+  [MiniWidgetType.BatteryIndicator]: true,
+  [MiniWidgetType.ChangeAltitudeCommander]: false,
+  [MiniWidgetType.Clock]: false,
+  [MiniWidgetType.DepthIndicator]: false,
+  [MiniWidgetType.MissionIdentifier]: true,
+  [MiniWidgetType.RelativeAltitudeIndicator]: false,
+  [MiniWidgetType.TakeoffLandCommander]: false,
+  [MiniWidgetType.VeryGenericIndicator]: true,
+  [MiniWidgetType.JoystickCommIndicator]: true,
+  [MiniWidgetType.MiniVideoRecorder]: true,
+  [MiniWidgetType.ModeSelector]: false,
+  [MiniWidgetType.SatelliteIndicator]: false,
+  [MiniWidgetType.ViewSelector]: false,
+}
+
 export const validateWidget = (maybeWidget: Widget): maybeWidget is Widget => {
   if (maybeWidget.hash === undefined) throw new Error('Widget validation failed: property hash is missing.')
 
-  const widgetProps = ['component', 'position', 'size', 'name', 'options', 'managerVars']
-  const managetVarsProps = [
-    'configMenuOpen',
-    'allowMoving',
-    'lastNonMaximizedX',
-    'lastNonMaximizedY',
-    'lastNonMaximizedWidth',
-    'lastNonMaximizedHeight',
-    'highlighted',
-  ]
+  const widgetProps = ['component', 'position', 'size', 'name', 'options']
   const checkFails: string[] = []
 
   widgetProps.forEach((p) => {
     // @ts-ignore
     if (maybeWidget[p] !== undefined) return
     checkFails.push(`Property ${p} is missing.`)
-  })
-
-  managetVarsProps.forEach((p) => {
-    // @ts-ignore
-    if (maybeWidget['managerVars'] !== undefined && maybeWidget['managerVars'][p] !== undefined) return
-    checkFails.push(`Property ${p} of the managerVars is missing.`)
   })
 
   if (checkFails.length !== 0) {
@@ -247,20 +869,13 @@ export const validateWidget = (maybeWidget: Widget): maybeWidget is Widget => {
 export const validateMiniWidget = (maybeMiniWidget: MiniWidget): maybeMiniWidget is MiniWidget => {
   if (maybeMiniWidget.hash === undefined) throw new Error('Mini widget validation failed: property hash is missing.')
 
-  const miniWidgetProps = ['component', 'name', 'options', 'managerVars']
-  const managetVarsProps = ['configMenuOpen', 'highlighted']
+  const miniWidgetProps = ['component', 'name', 'options']
   const checkFails: string[] = []
 
   miniWidgetProps.forEach((p) => {
     // @ts-ignore
     if (maybeMiniWidget[p] !== undefined) return
     checkFails.push(`Property ${p} is missing.`)
-  })
-
-  managetVarsProps.forEach((p) => {
-    // @ts-ignore
-    if (maybeMiniWidget['managerVars'] !== undefined && maybeMiniWidget['managerVars'][p] !== undefined) return
-    checkFails.push(`Property ${p} of the managerVars is missing.`)
   })
 
   if (checkFails.length !== 0) {

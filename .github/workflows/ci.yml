@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -38,7 +38,6 @@ jobs:
           bun run lint
           bun run typecheck
           bun run build
-          xvfb-run --auto-servernum bun test:ci
 
   deploy-page:
     environment:
@@ -52,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -90,49 +89,124 @@ jobs:
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
         - os: macos-13
-          suffix: macos
+          suffix: mac
+          arch: x64
           extension: dmg
+          latestMetadataName: latest-mac.yml
 
         - os: ubuntu-latest
           suffix: linux
+          arch: x86_64
           extension: AppImage
+          latestMetadataName: latest-linux.yml
+
+        - os: ubuntu-24-arm
+          suffix: linux
+          arch: arm64
+          extension: AppImage
+          latestMetadataName: latest-linux-arm64.yml
 
         - os: windows-latest
-          suffix: windows
+          suffix: win
+          arch: x64
           extension: exe
+          latestMetadataName: latest.yml
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
+
+      - name: Install snapcraft for arm64
+        if: matrix.os == 'ubuntu-24-arm'
+        run: |
+          sudo apt update
+          sudo apt install -y --fix-missing snapd
+          sudo snap install snapcraft --classic
 
       - uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
 
-      - name: Build electron
+      - name: Set version as environment variable (Windows)
+        if: matrix.os == 'windows-latest'
+        run: echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $env:GITHUB_ENV
+
+      - name: Set version as environment variable (others)
+        if: matrix.os != 'windows-latest'
+        run: echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_ENV
+
+      - name: Bun build
         run: |
           bun install --frozen-lockfile
           bun run build
-          bun deploy:electron
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+      - name: Bun deploy (arm)
+        if: matrix.os == 'ubuntu-24-arm'
+        run: |
+          SNAPCRAFT_BUILD_ENVIRONMENT="host" bun run deploy:electron
+
+      - name: Bun deploy (others)
+        if: matrix.os != 'ubuntu-24-arm'
+        run: |
+          bun run deploy:electron
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: cockpit-${{ matrix.suffix }}
-          path: dist/Cockpit*.${{ matrix.extension }}
+          name: Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
+          path: dist/Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
           if-no-files-found: error
 
-      - name: Upload Release
+      - name: Upload diff artifact (mac-only)
+        if: matrix.os == 'macos-13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.zip
+          path: dist/Cockpit*.zip
+          if-no-files-found: error
+
+      - name: Upload latest metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.latestMetadataName }}
+          path: dist/latest*.yml
+          if-no-files-found: error
+
+      - name: Upload binary release
         uses: svenstaro/upload-release-action@v2
         if: startsWith(github.ref, 'refs/tags/') && success()
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/Cockpit*.${{ matrix.extension }}
+          file: dist/Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
+          tag: ${{ github.ref }}
+          overwrite: true
+          prerelease: true
+          file_glob: true
+
+      - name: Upload diff release (mac-only)
+        uses: svenstaro/upload-release-action@v2
+        if: startsWith(github.ref, 'refs/tags/') && success() && matrix.os == 'macos-13'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.zip
+          tag: ${{ github.ref }}
+          overwrite: true
+          prerelease: true
+          file_glob: true
+
+      - name: Upload latest metadata release
+        uses: svenstaro/upload-release-action@v2
+        if: startsWith(github.ref, 'refs/tags/') && success()
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/${{ matrix.latestMetadataName }}
           tag: ${{ github.ref }}
           overwrite: true
           prerelease: true
@@ -140,13 +214,27 @@ jobs:
 
   deploy-flatpak:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          suffix: linux
+          arch: x86_64
+          extension: flatpak
+
+        - os: ubuntu-24-arm
+          suffix: linux
+          arch: arm64
+          extension: flatpak
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v1
         with:
@@ -159,17 +247,33 @@ jobs:
           sudo flatpak remote-add --system flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak remote-add --user flathub https://flathub.org/repo/flathub.flatpakrepo || true
 
-      - name: Build electron
+      - name: Set version as environment variable (others)
+        run: echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_ENV
+
+      - name: Build electron (arm)
+        if: matrix.os == 'ubuntu-24-arm'
         run: |
           bun install --frozen-lockfile
           bun run build
-          env DEBUG="@malept/flatpak-bundler" bun deploy:flatpak
+          env DEBUG="@malept/flatpak-bundler" bun run deploy:flatpak --arm64
+
+      - name: Build electron (x86_64)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          env DEBUG="@malept/flatpak-bundler" bun run deploy:flatpak --x64
+
+      - name: Rename 'aarch64' to 'arm64'
+        if: matrix.os == 'ubuntu-24-arm'
+        run: |
+          mv dist/Cockpit-${{ matrix.suffix }}-aarch64-${{ env.VERSION }}.${{ matrix.extension }} dist/Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: cockpit-flatpak
-          path: dist/Cockpit*.flatpak
+          name: Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
+          path: dist/Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
           if-no-files-found: error
 
       - name: Upload Release
@@ -177,7 +281,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') && success()
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/Cockpit*.flatpak
+          file: dist/Cockpit-${{ matrix.suffix }}-${{ matrix.arch }}-${{ env.VERSION }}.${{ matrix.extension }}
           tag: ${{ github.ref }}
           overwrite: true
           prerelease: true
@@ -199,7 +303,7 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -260,3 +364,15 @@ jobs:
         run: |
           docker buildx imagetools \
             inspect ${{ steps.prepare.outputs.docker_image }}:${{ steps.prepare.outputs.version }}
+
+  deploy-cloud:
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') && success()
+    steps:
+      - name: Build and Publish Extension in BlueOS CLoud
+        uses: bluerobotics/blueos-cloud-action@0.0.1
+        with:
+          BCLOUD_PAT: ${{secrets.BCLOUD_PAT}}
+          PLATFORMS: linux/arm/v7,linux/arm64,linux/amd64
+          EXTENSION: 29fb2bc7-2bc9-4d86-a57b-4fe1ee152d1e

@@ -16,23 +16,25 @@
       >
       <template #content>
         <div
-          class="flex justify-start align-start mb-2"
-          :class="interfaceStore.isOnSmallScreen ? 'h-[80vh] w-[88vw] gap-x-0 mt-2' : 'h-[50vh] w-[60vw] gap-x-1 mt-4'"
+          class="flex justify-start align-start mb-2 overflow-y-auto"
+          :class="
+            interfaceStore.isOnSmallScreen
+              ? 'h-[80vh] w-[80vw] gap-x-0 mt-2'
+              : interfaceStore.isOnVeryLargeScreen
+              ? 'h-[50vh] w-[50vw] gap-x-1 mt-4'
+              : 'h-[60vh] w-[70vw] gap-x-1 mt-4'
+          "
         >
           <div
             class="overflow-y-auto overflow-x-hidden"
-            :class="interfaceStore.isOnSmallScreen ? 'h-[80vh]' : 'h-[50vh]'"
+            :class="interfaceStore.isOnSmallScreen ? 'h-[80vh] w-[200px] pr-1 ml-0' : 'h-[50vh] min-w-[220px] '"
           >
-            <div
-              id="leftColumn"
-              class="flex flex-col justify-start align-start mt-[2vh] overflow-auto"
-              :class="interfaceStore.isOnSmallScreen ? 'w-[160px] pr-1 ml-0' : 'w-[220px] pr-4 ml-2'"
-            >
+            <div id="leftColumn" class="flex flex-col justify-start align-start mt-[2vh] overflow-auto">
               <ExpansiblePanel compact mark-expanded darken-content hover-effect>
                 <template #title>Overlay Options</template>
                 <template #content>
                   <div>
-                    <div class="flex flex-col flex-wrap justify-between align-start w-full gap-y-0 pt-3">
+                    <div class="flex flex-col flex-wrap justify-between align-start gap-y-0 pt-3">
                       <div class="flex flex-row justify-between align-center w-full gap-x-3">
                         <span
                           class="font-bold text-white text-start mb-5"
@@ -41,7 +43,6 @@
                         >
                         <v-text-field
                           v-model="datalogger.telemetryDisplayOptions.value.fontSize"
-                          type="number"
                           density="compact"
                           :class="interfaceStore.isOnSmallScreen ? 'w-[50px]' : 'w-[75px]'"
                         />
@@ -55,14 +56,13 @@
                         <v-text-field
                           v-model="datalogger.telemetryDisplayOptions.value.fontShadowSize"
                           density="compact"
-                          type="number"
                           min="1"
                           max="5"
                           :class="interfaceStore.isOnSmallScreen ? 'w-[50px]' : 'w-[75px]'"
                         />
                       </div>
                       <div
-                        class="flex flex-col justify-between"
+                        class="flex flex-col justify-between w-full"
                         :class="interfaceStore.isOnSmallScreen ? 'gap-y-3' : 'gap-y-5 mt-2'"
                       >
                         <div class="flex flex-row justify-between w-[90%] align-center gap-x-3">
@@ -80,7 +80,7 @@
                               >
                               <div
                                 v-bind="props"
-                                class="w-[20px] h-[20px] border-2 border-slate-600 rounded-full"
+                                class="w-[20px] h-[20px] border-2 border-slate-600 rounded-full cursor-pointer"
                                 :style="{ backgroundColor: datalogger.telemetryDisplayOptions.value.fontColor }"
                               ></div>
                             </template>
@@ -107,7 +107,7 @@
                               >
                               <div
                                 v-bind="props"
-                                class="w-[20px] h-[20px] border-2 border-slate-600 rounded-full"
+                                class="w-[20px] h-[20px] border-2 border-slate-600 rounded-full cursor-pointer"
                                 :style="{ backgroundColor: datalogger.telemetryDisplayOptions.value.fontOutlineColor }"
                               ></div>
                             </template>
@@ -133,7 +133,7 @@
                               >
                               <div
                                 v-bind="props"
-                                class="w-[20px] h-[20px] border-2 border-slate-600 rounded-full"
+                                class="w-[20px] h-[20px] border-2 border-slate-600 rounded-full cursor-pointer"
                                 :style="{ backgroundColor: datalogger.telemetryDisplayOptions.value.fontShadowColor }"
                               ></div>
                             </template>
@@ -208,7 +208,13 @@
                   >
                     <div v-for="variable in loggedVariables.sort()" :key="variable">
                       <v-chip
-                        :size="interfaceStore.isOnSmallScreen ? 'x-small' : 'small'"
+                        :size="
+                          interfaceStore.isOnSmallScreen
+                            ? 'x-small'
+                            : interfaceStore.isOnVeryLargeScreen
+                            ? 'large'
+                            : 'small'
+                        "
                         :class="interfaceStore.isOnSmallScreen ? '' : 'my-[2px]'"
                         label
                         class="cursor-grab elevation-1"
@@ -231,7 +237,13 @@
                   >
                     <div v-for="element in otherLoggingElements.sort()" :key="element">
                       <v-chip
-                        :size="interfaceStore.isOnSmallScreen ? 'x-small' : 'small'"
+                        :size="
+                          interfaceStore.isOnSmallScreen
+                            ? 'x-small'
+                            : interfaceStore.isOnVeryLargeScreen
+                            ? 'large'
+                            : 'small'
+                        "
                         :class="interfaceStore.isOnSmallScreen ? '' : 'my-[2px]'"
                         label
                         class="cursor-grab elevation-1"
@@ -254,7 +266,13 @@
                   >
                     <div v-for="(element, index) in customMessageElements" :key="element" class="min-h-[50px]">
                       <v-chip
-                        :size="interfaceStore.isOnSmallScreen ? 'x-small' : 'small'"
+                        :size="
+                          interfaceStore.isOnSmallScreen
+                            ? 'x-small'
+                            : interfaceStore.isOnVeryLargeScreen
+                            ? 'large'
+                            : 'small'
+                        "
                         :class="interfaceStore.isOnSmallScreen ? '' : 'my-[2px]'"
                         close
                         label
@@ -292,15 +310,43 @@
                   </VueDraggable>
                 </template>
               </ExpansiblePanel>
+              <ExpansiblePanel compact mark-expanded no-top-divider darken-content hover-effect>
+                <template #title>Settings</template>
+                <template #content>
+                  <p class="text-[12px] mt-2 ml-1">Telemetry frequency - 1 to 100 Hz (default 1 Hz)</p>
+                  <div class="flex mb-1 justify">
+                    <v-slider
+                      v-model="newFrequency"
+                      color="white"
+                      class="mt-1 scale-90 w-[100px]"
+                      min="1"
+                      step="1"
+                      max="100"
+                      hide-details
+                    />
+                    <v-text-field
+                      v-model="newFrequencyString"
+                      min="1"
+                      step="1"
+                      max="100"
+                      class="bg-transparent w-[40px] -mr-2"
+                      type="number"
+                      density="compact"
+                      variant="plain"
+                      hide-details
+                    />
+                  </div>
+                </template>
+              </ExpansiblePanel>
               <div class="flex justify-end w-full mt-2">
-                <v-btn size="x-small" variant="text" class="group" @click="resetAllChips">
+                <v-btn size="x-small" variant="text" class="mr-2" @click="resetAllChips">
                   Reset Positions
                   <v-icon size="18" class="ml-2">mdi-refresh</v-icon>
                 </v-btn>
               </div>
             </div>
           </div>
-          <div id="rightColumn" class="flex flex-col justify-center items-center relative w-[80%] h-full ml-2">
+          <div id="rightColumn" class="flex flex-col justify-center items-center relative w-full h-full ml-2">
             <div
               id="mocked-screen"
               class="frosted-button flex flex-row flex-wrap justify-start align-start elevation-1 w-full h-full"
@@ -331,7 +377,13 @@
                     <v-chip
                       close
                       label
-                      :size="interfaceStore.isOnSmallScreen ? 'x-small' : 'small'"
+                      :size="
+                        interfaceStore.isOnSmallScreen
+                          ? 'x-small'
+                          : interfaceStore.isOnVeryLargeScreen
+                          ? 'large'
+                          : 'small'
+                      "
                       class="cursor-grab elevation-1"
                       :class="interfaceStore.isOnSmallScreen ? '' : 'my-[2px]'"
                       >{{ variable }}
@@ -345,30 +397,12 @@
             </div>
           </div>
         </div>
-        <div v-show="selectedTab === 'logs'" class="flex flex-col justify-center align-center">
-          <h1 class="text-lg font-bold text-white">Frequency of the telemetry log</h1>
-          <span class="text-sm text-slate-400 w-[50%] text-center">
-            Common values (1 - 100Hz) can be set with the slider.
-          </span>
-          <span class="text-sm text-slate-400">
-            The full allowed range (0.1 - 1000Hz) can be specified using the text input.
-          </span>
-          <div class="flex flex-col justify-center m-3 align-center">
-            <fwb-range v-model="newFrequency" class="m-2" :min="1" :max="100" :steps="1" label="" />
-            <fwb-input v-model="newFrequencyString" class="w-24 m-1 text-center align-middle">
-              <template #suffix>
-                <span class="flex justify-center h-7 align-center">Hz</span>
-              </template>
-            </fwb-input>
-          </div>
-        </div>
       </template>
     </BaseConfigurationView>
   </div>
 </template>
 
 <script setup lang="ts">
-import { FwbInput, FwbRange } from 'flowbite-vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { VueDraggable } from 'vue-draggable-plus'
 
@@ -411,7 +445,6 @@ const originalLoggedVariables = ref<string[]>([])
 const otherLoggingElements = ref(otherAvailableLoggingElements)
 const originalOtherLoggingElements = ref(otherAvailableLoggingElements)
 const newFrequency = ref(1000 / datalogger.logInterval.value)
-const selectedTab = ref('telemetry')
 const customMessageElements = ref<string[]>([])
 const newMessage = ref('')
 const dragPosition = ref(0)
@@ -569,5 +602,8 @@ const newFrequencyString = computed({
 }
 .mock-screen {
   position: absolute;
+}
+. input[type='number']::-webkit-inner-spin-button {
+  margin-left: 6px;
 }
 </style>

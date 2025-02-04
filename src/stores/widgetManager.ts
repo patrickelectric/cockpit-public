@@ -1,16 +1,23 @@
 import '@/libs/cosmos'
 
-import { useDebounceFn, useWindowSize } from '@vueuse/core'
+import { useDebounceFn, useStorage, useWindowSize } from '@vueuse/core'
 import { saveAs } from 'file-saver'
 import { defineStore } from 'pinia'
-import Swal from 'sweetalert2'
 import { v4 as uuid4 } from 'uuid'
-import { computed, onBeforeMount, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeMount, onBeforeUnmount, Ref, ref, watch } from 'vue'
 
-import { defaultProfileVehicleCorrespondency, defaultWidgetManagerVars, widgetProfiles } from '@/assets/defaults'
+import {
+  defaultCustomWidgetContainers,
+  defaultMiniWidgetManagerVars,
+  defaultProfileVehicleCorrespondency,
+  defaultWidgetManagerVars,
+  widgetProfiles,
+} from '@/assets/defaults'
 import { miniWidgetsProfile } from '@/assets/defaults'
-import { useBlueOsStorage } from '@/composables/settingsSyncer'
-import { getKeyDataFromCockpitVehicleStorage, setKeyDataOnCockpitVehicleStorage } from '@/libs/blueos'
+import { useInteractionDialog } from '@/composables/interactionDialog'
+import { resetJustMadeKey, useBlueOsStorage } from '@/composables/settingsSyncer'
+import { openSnackbar } from '@/composables/snackbar'
+import { useSnackbar } from '@/composables/snackbar'
 import { MavType } from '@/libs/connection/m2r/messages/mavlink2rest-enum'
 import * as Words from '@/libs/funny-name/words'
 import {
@@ -19,7 +26,7 @@ import {
   unregisterActionCallback,
 } from '@/libs/joystick/protocols/cockpit-actions'
 import { CurrentlyLoggedVariables } from '@/libs/sensors-logging'
-import { isEqual, sequentialArray } from '@/libs/utils'
+import { isEqual, reloadCockpit, sequentialArray } from '@/libs/utils'
 import type { Point2D, SizeRect2D } from '@/types/general'
 import {
   type MiniWidget,
@@ -27,24 +34,29 @@ import {
   type Profile,
   type View,
   type Widget,
+  CustomWidgetElement,
+  CustomWidgetElementContainer,
+  InternalWidgetSetupInfo,
+  MiniWidgetManagerVars,
   validateProfile,
   validateView,
+  WidgetManagerVars,
   WidgetType,
 } from '@/types/widgets'
 
-import { useMainVehicleStore } from './mainVehicle'
+const { showDialog } = useInteractionDialog()
+const { showSnackbar } = useSnackbar()
 
-const savedProfilesKey = 'cockpit-saved-profiles-v8'
+export const savedProfilesKey = 'cockpit-saved-profiles-v8'
 
 export const useWidgetManagerStore = defineStore('widget-manager', () => {
-  const vehicleStore = useMainVehicleStore()
   const editingMode = ref(false)
   const snapToGrid = ref(true)
   const gridInterval = ref(0.01)
   const currentMiniWidgetsProfile = useBlueOsStorage('cockpit-mini-widgets-profile-v4', miniWidgetsProfile)
   const savedProfiles = useBlueOsStorage<Profile[]>(savedProfilesKey, [])
-  const currentViewIndex = useBlueOsStorage('cockpit-current-view-index', 0)
-  const currentProfileIndex = useBlueOsStorage('cockpit-current-profile-index', 0)
+  const currentViewIndex = useStorage('cockpit-current-view-index', 0)
+  const currentProfileIndex = useStorage('cockpit-current-profile-index', 0)
   const desiredTopBarHeightPixels = ref(48)
   const desiredBottomBarHeightPixels = ref(48)
   const visibleAreaMinClearancePixels = ref(20)
@@ -52,6 +64,169 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     'cockpit-default-vehicle-type-profiles',
     defaultProfileVehicleCorrespondency
   )
+  const _widgetManagerVars: Ref<Record<string, WidgetManagerVars>> = ref({})
+  const _miniWidgetManagerVars: Ref<Record<string, MiniWidgetManagerVars>> = ref({})
+  const isElementsPropsDrawerVisible = ref(false)
+  const elementToShowOnDrawer = ref<CustomWidgetElement>()
+  const widgetToEdit = ref<Widget>()
+  const miniWidgetLastValues = useBlueOsStorage<Record<string, any>>('cockpit-mini-widget-last-values', {})
+  const floatingWidgetContainers = ref<MiniWidgetContainer[]>([])
+
+  const editWidgetByHash = (hash: string): Widget | undefined => {
+    widgetToEdit.value = currentProfile.value.views
+      .flatMap((view) => view.widgets)
+      .find((widget) => widget.hash === hash)
+    return widgetToEdit.value
+  }
+
+  const getElementByHash = (hash: string): CustomWidgetElement | undefined => {
+    let customWidgetElement = currentProfile.value.views
+      .flatMap((view) => view.widgets)
+      .filter((widget) => widget.component === WidgetType.CustomWidgetBase)
+      .flatMap((widget) => widget.options.elementContainers)
+      .flatMap((container) => container.elements)
+      .find((element) => element.hash === hash)
+
+    if (customWidgetElement) {
+      return customWidgetElement
+    }
+
+    customWidgetElement = currentProfile.value.views
+      .flatMap((view) => view.miniWidgetContainers || [])
+      .flatMap((container) => container.widgets) // Get all widgets in mini-widget containers
+      .find((miniWidget) => miniWidget.hash === hash)
+
+    return customWidgetElement
+  }
+
+  const showElementPropsDrawer = (customWidgetElementHash: string): void => {
+    const customWidgetElement = getElementByHash(customWidgetElementHash)
+    if (!customWidgetElement) {
+      showSnackbar({ variant: 'error', message: 'Could not find element with the given hash.', duration: 3000 })
+      return
+    }
+    elementToShowOnDrawer.value = customWidgetElement
+    isElementsPropsDrawerVisible.value = true
+  }
+
+  const removeElementFromCustomWidget = (elementHash: string): void => {
+    const customWidgetElement = getElementByHash(elementHash)
+    if (!customWidgetElement) {
+      throw new Error('Could not find element with the given hash.')
+    }
+
+    const customWidget = currentProfile.value.views
+      .flatMap((view) => view.widgets)
+      .filter((widget) => widget.component === WidgetType.CustomWidgetBase)
+      .find((widget) =>
+        widget.options.elementContainers.some((container: CustomWidgetElementContainer) =>
+          container.elements.includes(customWidgetElement)
+        )
+      )
+
+    if (!customWidget) {
+      throw new Error('Could not find the custom widget containing the element.')
+    }
+
+    const customWidgetContainer = customWidget.options.elementContainers.find(
+      (container: CustomWidgetElementContainer) => container.elements.includes(customWidgetElement)
+    )
+    if (!customWidgetContainer) {
+      throw new Error('Could not find the container containing the element.')
+    }
+
+    customWidgetContainer.elements = customWidgetContainer.elements.filter(
+      (element: CustomWidgetElement) => element.hash !== elementHash
+    )
+  }
+
+  const loadWidgetFromFile = (widgetHash: string, loadedWidget: Widget): void => {
+    const currentViewWidgets = currentProfile.value.views[currentViewIndex.value].widgets
+    const widgetIndex = currentViewWidgets.findIndex((widget) => widget.hash === widgetHash)
+
+    if (widgetIndex === -1) {
+      showSnackbar({ variant: 'error', message: 'Widget not found with the given hash.', duration: 3000 })
+      return
+    }
+
+    const currentPosition = currentViewWidgets[widgetIndex].position
+
+    reassignHashesToWidget(loadedWidget)
+
+    loadedWidget.position = currentPosition
+    currentViewWidgets[widgetIndex] = loadedWidget
+
+    showSnackbar({ variant: 'success', message: 'Widget loaded successfully with new hash.', duration: 3000 })
+  }
+
+  const reassignHashesToWidget = (widget: Widget): void => {
+    const oldToNewHashMap = new Map<string, string>()
+
+    const oldWidgetHash = widget.hash
+    widget.hash = uuid4()
+    oldToNewHashMap.set(oldWidgetHash, widget.hash)
+
+    for (const container of widget.options.elementContainers) {
+      for (const element of container.elements) {
+        reassignHashesToElement(element, oldToNewHashMap)
+      }
+    }
+  }
+
+  const reassignHashesToElement = (element: CustomWidgetElement, hashMap: Map<string, string>): void => {
+    const oldHash = element.hash
+    element.hash = uuid4()
+    hashMap.set(oldHash, element.hash)
+
+    if (element.options && element.options.dataLakeVariable) {
+      const dataLakeVariable = element.options.dataLakeVariable
+      dataLakeVariable.id = `${dataLakeVariable.id}_new`
+      dataLakeVariable.name = `${dataLakeVariable.name}_new`
+    }
+  }
+
+  /**
+   * Updates the options of a custom widget element by its hash.
+   * @param {string} elementHash - The unique identifier of the element.
+   * @param {Record<string, any>} newOptions - The new options to merge with the existing ones.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const updateElementOptions = (elementHash: string, newOptions: Record<string, any>): void => {
+    const element = getElementByHash(elementHash)
+    if (element) {
+      element.options = {
+        ...element.options,
+        ...newOptions,
+      }
+    }
+  }
+
+  const allowMovingAndResizing = (widgetHash: string, forcedState: boolean): void => {
+    currentProfile.value.views.forEach((view) => {
+      view.widgets.forEach((widget) => {
+        if (widget.hash === widgetHash) {
+          widgetManagerVars(widgetHash).allowMoving = forcedState
+        }
+      })
+    })
+  }
+
+  const widgetManagerVars = (widgetHash: string): WidgetManagerVars => {
+    if (!_widgetManagerVars.value[widgetHash]) {
+      _widgetManagerVars.value[widgetHash] = { ...defaultWidgetManagerVars }
+    }
+    return _widgetManagerVars.value[widgetHash]
+  }
+
+  const miniWidgetManagerVars = (miniWidgetHash: string): MiniWidgetManagerVars => {
+    if (!isRealMiniWidget(miniWidgetHash)) {
+      return { ...defaultMiniWidgetManagerVars }
+    }
+    if (!_miniWidgetManagerVars.value[miniWidgetHash]) {
+      _miniWidgetManagerVars.value[miniWidgetHash] = { ...defaultMiniWidgetManagerVars }
+    }
+    return _miniWidgetManagerVars.value[miniWidgetHash]
+  }
 
   const currentTopBarHeightPixels = computed(() => {
     return desiredTopBarHeightPixels.value
@@ -78,7 +253,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
       const profilesHashes = savedProfiles.value.map((p) => p.hash)
 
       if (!profilesHashes.includes(newValue.hash)) {
-        Swal.fire({ icon: 'error', text: 'Could not find profile.', timer: 3000 })
+        showDialog({ variant: 'error', message: 'Could not find profile.', timer: 3000 })
         return
       }
 
@@ -98,11 +273,11 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
   const miniWidgetContainersInCurrentView = computed(() => {
     const fixedBarContainers = currentMiniWidgetsProfile.value.containers
     const viewBarContainers = currentView.value.miniWidgetContainers
-    const floatingWidgetContainers = currentView.value.widgets
+    floatingWidgetContainers.value = currentView.value.widgets
       .filter((w) => w.component === WidgetType.MiniWidgetsBar)
       .filter((w) => w.options && w.options.miniWidgetsContainer)
       .map((w) => w.options.miniWidgetsContainer)
-    return [...fixedBarContainers, ...viewBarContainers, ...floatingWidgetContainers]
+    return [...fixedBarContainers, ...viewBarContainers, ...floatingWidgetContainers.value]
   })
 
   /**
@@ -184,7 +359,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
   function loadProfile(profile: Profile): void {
     const profileIndex = savedProfiles.value.findIndex((p) => p.hash === profile.hash)
     if (profileIndex === -1) {
-      Swal.fire({ icon: 'error', text: 'Could not find profile.', timer: 3000 })
+      showDialog({ message: 'Could not find profile.', variant: 'error', timer: 3000 })
       return
     }
     currentProfileIndex.value = profileIndex
@@ -195,10 +370,11 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
    * Reset saved profiles to original state
    */
   function resetSavedProfiles(): void {
+    localStorage.setItem(resetJustMadeKey, 'true')
     savedProfiles.value = widgetProfiles
     currentProfileIndex.value = 0
     currentViewIndex.value = 0
-    location.reload()
+    reloadCockpit(3000)
   }
 
   const exportProfile = (profile: Profile): void => {
@@ -215,7 +391,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
       try {
         validateProfile(maybeProfile)
       } catch (error) {
-        Swal.fire({ icon: 'error', text: `Invalid profile file. ${error}` })
+        showDialog({ variant: 'error', message: `Invalid profile file. ${error}` })
         return
       }
       maybeProfile.hash = uuid4()
@@ -224,31 +400,6 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     }
     // @ts-ignore: We know the event type and need refactor of the event typing
     reader.readAsText(e.target.files[0])
-  }
-
-  const importProfilesFromVehicle = async (): Promise<void> => {
-    const newProfiles = await getKeyDataFromCockpitVehicleStorage(vehicleStore.globalAddress, savedProfilesKey)
-    if (!Array.isArray(newProfiles)) {
-      Swal.fire({ icon: 'error', text: 'Could not import profiles from vehicle. Profiles do not form an array.' })
-      return
-    }
-
-    newProfiles.every((profile) => {
-      try {
-        validateProfile(profile)
-      } catch (error) {
-        Swal.fire({ icon: 'error', text: `Invalid profile file. ${error}` })
-        return
-      }
-    })
-
-    savedProfiles.value = newProfiles
-    Swal.fire({ icon: 'success', text: 'Cockpit profiles imported from vehicle.', timer: 3000 })
-  }
-
-  const exportProfilesToVehicle = async (): Promise<void> => {
-    await setKeyDataOnCockpitVehicleStorage(vehicleStore.globalAddress, savedProfilesKey, savedProfiles.value)
-    Swal.fire({ icon: 'success', text: 'Cockpit profiles exported to vehicle.', timer: 3000 })
   }
 
   /**
@@ -294,7 +445,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
    */
   function deleteProfile(profile: Profile): void {
     if (!isUserProfile(profile)) {
-      Swal.fire({ icon: 'error', text: 'Could not find profile.', timer: 3000 })
+      showDialog({ variant: 'error', message: 'Could not find profile.', timer: 3000 })
       return
     }
 
@@ -322,9 +473,9 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
    */
   function deleteView(view: View): void {
     if (currentProfile.value.views.length === 1) {
-      Swal.fire({
-        icon: 'error',
-        text: 'Cannot remove last view. Please create another before deleting this one.',
+      showDialog({
+        variant: 'error',
+        message: 'Cannot remove last view. Please create another before deleting this one.',
         timer: 4000,
       })
       return
@@ -349,7 +500,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
   function renameView(view: View, name: string): void {
     const index = currentProfile.value.views.indexOf(view)
     if (name.length === 0) {
-      Swal.fire({ icon: 'error', text: 'View name cannot be blank.', timer: 2000 })
+      showDialog({ variant: 'error', message: 'View name cannot be blank.', timer: 2000 })
       return
     }
     currentProfile.value.views[index].name = name
@@ -361,7 +512,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
    */
   const selectView = (view: View): void => {
     if (!view.visible) {
-      Swal.fire({ icon: 'error', text: 'Cannot select a view that is not visible.', timer: 5000 })
+      showDialog({ variant: 'error', message: 'Cannot select a view that is not visible.', timer: 5000 })
       return
     }
     const index = currentProfile.value.views.indexOf(view)
@@ -394,7 +545,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
       try {
         validateView(maybeView)
       } catch (error) {
-        Swal.fire({ icon: 'error', text: `Invalid view file. ${error}` })
+        showDialog({ variant: 'error', message: `Invalid view file. ${error}` })
         return
       }
       maybeView.hash = uuid4()
@@ -406,19 +557,36 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
 
   /**
    * Add widget with given type to given view
-   * @param { WidgetType } widgetType - Type of the widget
+   * @param { WidgetType } widget - Type of the widget
    * @param { View } view - View
    */
-  function addWidget(widgetType: WidgetType, view: View): void {
+  function addWidget(widget: InternalWidgetSetupInfo, view: View): void {
     const widgetHash = uuid4()
-    view.widgets.unshift({
+
+    const newWidget = {
       hash: widgetHash,
-      name: widgetType,
-      component: widgetType,
+      name: widget.name,
+      component: widget.component,
       position: { x: 0.4, y: 0.32 },
       size: { width: 0.2, height: 0.36 },
-      options: {},
-      managerVars: { ...defaultWidgetManagerVars, ...{ allowMoving: true } },
+      options: widget.options,
+    }
+
+    if (widget.component === WidgetType.CustomWidgetBase) {
+      newWidget.options = {
+        elementContainers: defaultCustomWidgetContainers,
+        columns: 1,
+        leftColumnWidth: 50,
+        backgroundOpacity: 0.2,
+        backgroundColor: '#FFFFFF',
+        backgroundBlur: 25,
+      }
+    }
+
+    view.widgets.unshift(newWidget)
+    Object.assign(widgetManagerVars(newWidget.hash), {
+      ...defaultWidgetManagerVars,
+      ...{ allowMoving: true },
     })
   }
 
@@ -430,6 +598,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     const view = viewFromWidget(widget)
     const index = view.widgets.indexOf(widget)
     view.widgets.splice(index, 1)
+    elementToShowOnDrawer.value = undefined
   }
 
   /**
@@ -440,40 +609,49 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     const container: MiniWidgetContainer | undefined = miniWidgetContainersInCurrentView.value.find((cont) => {
       return cont.widgets.includes(miniWidget)
     })
-    if (container === undefined) {
-      Swal.fire({ icon: 'error', text: 'Mini-widget container not found.' })
+    const customWidgetContainer = getElementByHash(miniWidget.hash)
+    if (container) {
+      const index = container.widgets.indexOf(miniWidget)
+      container.widgets.splice(index, 1)
+      // Remove miniWidget variable from the list of currently logged variables
+      CurrentlyLoggedVariables.removeVariable(miniWidget.options.displayName)
+      return
+    }
+    if (customWidgetContainer) {
+      removeElementFromCustomWidget(miniWidget.hash)
+      CurrentlyLoggedVariables.removeVariable(miniWidget.options.displayName)
       return
     }
 
-    const index = container.widgets.indexOf(miniWidget)
-    container.widgets.splice(index, 1)
-
-    // Remove miniWidget variable from the list of currently logged variables
-    CurrentlyLoggedVariables.removeVariable(miniWidget.options.displayName)
+    showDialog({ variant: 'error', message: 'Mini-widget container not found.' })
   }
+
+  const customWidgetContainers = computed<MiniWidgetContainer[]>(() =>
+    currentProfile.value.views
+      .flatMap((view) => view.widgets)
+      .filter((widget) => widget.component === WidgetType.CustomWidgetBase)
+      .flatMap((widget) => widget.options.elementContainers)
+      .map((container) => ({
+        name: '',
+        widgets: container.elements as unknown as MiniWidget[],
+      }))
+  )
 
   /**
    * States whether the given mini-widget is a real mini-widget
    * Fake mini-widgets are those used as placeholders, in the edit-menu, for example
-   * @param { MiniWidget } miniWidget - Mini-widget
+   * @param { string } miniWidgetHash - Hash of the mini-widget
    * @returns { boolean }
    */
-  function isRealMiniWidget(miniWidget: MiniWidget): boolean {
-    return savedProfiles.value.some((profile) =>
-      profile.views.some((view) =>
-        view.miniWidgetContainers.some((container) =>
-          container.widgets.some((widget) => widget.hash === miniWidget.hash)
-        )
-      )
-    )
-  }
+  function isRealMiniWidget(miniWidgetHash: string): boolean {
+    const allContainers = [
+      ...savedProfiles.value.flatMap((profile) => profile.views.flatMap((view) => view.miniWidgetContainers)),
+      ...currentMiniWidgetsProfile.value.containers,
+      ...floatingWidgetContainers.value,
+      ...customWidgetContainers.value,
+    ]
 
-  /**
-   * Open widget configuration menu
-   * @param { Widget } widget - Widget
-   */
-  const openWidgetConfigMenu = (widget: Widget): void => {
-    widget.managerVars.configMenuOpen = true
+    return allContainers.some((container) => container.widgets.some((widget) => widget.hash === miniWidgetHash))
   }
 
   const fullScreenPosition = { x: 0, y: 0 }
@@ -483,41 +661,39 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
 
   const toggleFullScreen = (widget: Widget): void => {
     if (!isFullScreen(widget)) {
-      widget.managerVars.lastNonMaximizedX = widget.position.x
-      widget.managerVars.lastNonMaximizedY = widget.position.y
-      widget.managerVars.lastNonMaximizedWidth = widget.size.width
-      widget.managerVars.lastNonMaximizedHeight = widget.size.height
+      widgetManagerVars(widget.hash).lastNonMaximizedX = widget.position.x
+      widgetManagerVars(widget.hash).lastNonMaximizedY = widget.position.y
+      widgetManagerVars(widget.hash).lastNonMaximizedWidth = widget.size.width
+      widgetManagerVars(widget.hash).lastNonMaximizedHeight = widget.size.height
       widget.position = fullScreenPosition
       widget.size = fullScreenSize
       return
     }
 
-    if (widget.managerVars.lastNonMaximizedX === 0) {
-      widget.managerVars.lastNonMaximizedX = defaultRestoredPosition.x
+    if (widgetManagerVars(widget.hash).lastNonMaximizedX === 0) {
+      widgetManagerVars(widget.hash).lastNonMaximizedX = defaultRestoredPosition.x
     }
-    if (widget.managerVars.lastNonMaximizedY === fullScreenPosition.y) {
-      widget.managerVars.lastNonMaximizedY = defaultRestoredPosition.y
+    if (widgetManagerVars(widget.hash).lastNonMaximizedY === fullScreenPosition.y) {
+      widgetManagerVars(widget.hash).lastNonMaximizedY = defaultRestoredPosition.y
     }
-    if (widget.managerVars.lastNonMaximizedWidth === fullScreenSize.width) {
-      widget.managerVars.lastNonMaximizedWidth = defaultRestoredSize.width
+    if (widgetManagerVars(widget.hash).lastNonMaximizedWidth === fullScreenSize.width) {
+      widgetManagerVars(widget.hash).lastNonMaximizedWidth = defaultRestoredSize.width
     }
-    if (widget.managerVars.lastNonMaximizedHeight === fullScreenSize.height) {
-      widget.managerVars.lastNonMaximizedHeight = defaultRestoredSize.height
+    if (widgetManagerVars(widget.hash).lastNonMaximizedHeight === fullScreenSize.height) {
+      widgetManagerVars(widget.hash).lastNonMaximizedHeight = defaultRestoredSize.height
     }
     widget.position = {
-      x: widget.managerVars.lastNonMaximizedX,
-      y: widget.managerVars.lastNonMaximizedY,
+      x: widgetManagerVars(widget.hash).lastNonMaximizedX,
+      y: widgetManagerVars(widget.hash).lastNonMaximizedY,
     }
     widget.size = {
-      width: widget.managerVars.lastNonMaximizedWidth,
-      height: widget.managerVars.lastNonMaximizedHeight,
+      width: widgetManagerVars(widget.hash).lastNonMaximizedWidth,
+      height: widgetManagerVars(widget.hash).lastNonMaximizedHeight,
     }
   }
 
-  // If the user does not have it's own profiles yet, try to fetch them from the vehicle, and if it fails, create default ones
+  // If the user does not have it's own profiles yet, create default ones
   if (savedProfiles.value.isEmpty()) {
-    // We use a self invoked await function to avoid moving the entire store to async
-    ;(async () => importProfilesFromVehicle())()
     widgetProfiles.forEach((profile) => {
       const userProfile = structuredClone(profile)
       userProfile.name = userProfile.name.replace('Default', 'User')
@@ -525,7 +701,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
       savedProfiles.value.push(userProfile)
     })
     loadProfile(savedProfiles.value[0])
-    location.reload()
+    reloadCockpit()
   }
 
   // Make sure the interface is not booting with a profile or view that does not exist
@@ -535,13 +711,22 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
   const resetWidgetsEditingState = (forcedState?: boolean): void => {
     currentProfile.value.views.forEach((view) => {
       view.widgets.forEach((widget) => {
-        widget.managerVars.allowMoving = forcedState === undefined ? editingMode.value : forcedState
+        widgetManagerVars(widget.hash).allowMoving = forcedState === undefined ? editingMode.value : forcedState
       })
     })
   }
 
   watch(editingMode, () => resetWidgetsEditingState())
-  resetWidgetsEditingState(false)
+
+  watch(
+    savedProfiles,
+    () => {
+      if (currentProfileIndex.value < savedProfiles.value.length) return
+      console.warn('Current profile index is out of bounds. Resetting to 0.')
+      currentProfileIndex.value = 0
+    },
+    { deep: true }
+  )
 
   const isFullScreen = (widget: Widget): boolean => {
     return isEqual(widget.position, fullScreenPosition) && isEqual(widget.size, fullScreenSize)
@@ -553,7 +738,11 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
 
     const numberOfVisibleViews = indexesOfVisibleViews.length
     if (numberOfVisibleViews === 1) {
-      Swal.fire({ icon: 'error', text: 'No visible views other the current one.', timer: 2500, timerProgressBar: true })
+      openSnackbar({
+        variant: 'error',
+        message: 'No visible views other the current one.',
+        duration: 2500,
+      })
       return
     }
 
@@ -602,7 +791,14 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
   // Profile migrations
   // TODO: remove on first stable release
   onBeforeMount(() => {
+    if (currentMiniWidgetsProfile.value.containers.length < 3) {
+      currentMiniWidgetsProfile.value = miniWidgetsProfile
+    }
+
     const alreadyUsedProfileHashes: string[] = []
+    const alreadyUsedViewHashes: string[] = []
+    const alreadyUsedWidgetHashes: string[] = []
+    const alreadyUsedMiniWidgetHashes: string[] = []
     savedProfiles.value.forEach((p) => {
       if (alreadyUsedProfileHashes.includes(p.hash)) {
         const newHash = uuid4()
@@ -614,32 +810,51 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
         v.showBottomBarOnBoot = v.showBottomBarOnBoot ?? true
         v.visible = v.visible ?? true
 
-        // If there's any configuration menu open, close it
-        v.widgets.forEach((w) => {
-          w.managerVars.configMenuOpen = false
-          w.managerVars.everMounted = true
-          // @ts-ignore: This is an old value that we are removing on those that still hold it
-          w.managerVars.timesMounted = undefined
-        })
-        v.miniWidgetContainers.forEach((c) =>
-          c.widgets.forEach((w) => {
-            w.managerVars.configMenuOpen = false
-            w.managerVars.everMounted = true
-            // @ts-ignore: This is an old value that we are removing on those that still hold it
-            w.managerVars.timesMounted = undefined
-          })
-        )
-      })
+        if (alreadyUsedViewHashes.includes(v.hash)) {
+          const newHash = uuid4()
+          v.hash = newHash
+        }
+        alreadyUsedViewHashes.push(v.hash)
 
-      currentMiniWidgetsProfile.value.containers.forEach((c) =>
-        c.widgets.forEach((w) => {
-          w.managerVars.everMounted = true
-          // @ts-ignore: This is an old value that we are removing on those that still hold it
-          w.managerVars.timesMounted = undefined
+        v.widgets.forEach((w) => {
+          if (alreadyUsedWidgetHashes.includes(w.hash)) {
+            const newHash = uuid4()
+            w.hash = newHash
+          }
+          alreadyUsedWidgetHashes.push(w.hash)
         })
-      )
+
+        v.miniWidgetContainers.forEach((c) => {
+          c.widgets.forEach((w) => {
+            if (alreadyUsedMiniWidgetHashes.includes(w.hash)) {
+              const newHash = uuid4()
+              w.hash = newHash
+            }
+            alreadyUsedMiniWidgetHashes.push(w.hash)
+          })
+        })
+      })
+    })
+
+    currentMiniWidgetsProfile.value.containers.forEach((c) => {
+      c.widgets.forEach((w) => {
+        if (alreadyUsedMiniWidgetHashes.includes(w.hash)) {
+          const newHash = uuid4()
+          w.hash = newHash
+        }
+        alreadyUsedMiniWidgetHashes.push(w.hash)
+      })
     })
   })
+
+  const setMiniWidgetLastValue = (miniWidgetHash: string, lastValue: any): void => {
+    miniWidgetLastValues.value[miniWidgetHash] = structuredClone(lastValue)
+  }
+
+  const getMiniWidgetLastValue = (miniWidgetHash: string): any => {
+    const lastValue = miniWidgetLastValues.value[miniWidgetHash]
+    return lastValue === undefined ? undefined : structuredClone(lastValue)
+  }
 
   // Reassign hashes to profiles using old ones - TODO: Remove for 1.0.0 release
   Object.values(savedProfiles.value).forEach((profile) => {
@@ -647,27 +862,6 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     const corrDefault = widgetProfiles.find((defProfile) => defProfile.name === profile.name)
     profile.hash = corrDefault?.hash ?? profile.hash
   })
-
-  onBeforeMount(() => {
-    const filteredProfiles = filterUnconfiguredMiniWidgetsFromProfiles(savedProfiles.value)
-    savedProfiles.value = filteredProfiles
-  })
-
-  const filterUnconfiguredMiniWidgetsFromProfiles = (profiles: Profile[]): Profile[] => {
-    return profiles.map((profile) => ({
-      ...profile,
-      views: profile.views.map((view) => ({
-        ...view,
-        miniWidgetContainers: view.miniWidgetContainers.map((container) => ({
-          ...container,
-          widgets: container.widgets.filter(
-            (widget) =>
-              widget.component !== 'VeryGenericIndicator' || (widget.options && widget.options.variableName !== '')
-          ),
-        })),
-      })),
-    }))
-  }
 
   return {
     editingMode,
@@ -680,6 +874,7 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     currentMiniWidgetsProfile,
     savedProfiles,
     vehicleTypeProfileCorrespondency,
+    allowMovingAndResizing,
     loadProfile,
     saveProfile,
     resetSavedProfiles,
@@ -698,19 +893,28 @@ export const useWidgetManagerStore = defineStore('widget-manager', () => {
     addWidget,
     deleteWidget,
     deleteMiniWidget,
-    openWidgetConfigMenu,
     toggleFullScreen,
     isFullScreen,
-    importProfilesFromVehicle,
-    exportProfilesToVehicle,
     loadDefaultProfileForVehicle,
     isWidgetVisible,
     widgetClearanceForVisibleArea,
     isRealMiniWidget,
+    widgetManagerVars,
+    miniWidgetManagerVars,
     desiredTopBarHeightPixels,
     desiredBottomBarHeightPixels,
     visibleAreaMinClearancePixels,
     currentTopBarHeightPixels,
     currentBottomBarHeightPixels,
+    showElementPropsDrawer,
+    isElementsPropsDrawerVisible,
+    elementToShowOnDrawer,
+    updateElementOptions,
+    removeElementFromCustomWidget,
+    loadWidgetFromFile,
+    widgetToEdit,
+    editWidgetByHash,
+    setMiniWidgetLastValue,
+    getMiniWidgetLastValue,
   }
 })

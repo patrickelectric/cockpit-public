@@ -2,29 +2,92 @@
   <BaseConfigurationView>
     <template #title>General configuration</template>
     <template #content>
-      <div class="flex-col h-full w-[540px] max-h-[90vh] overflow-y-auto ml-[10px] pr-3 -mr-[10px]">
-        <ExpansiblePanel no-top-divider :is-expanded="!interfaceStore.isOnSmallScreen">
-          <template #title>Global vehicle address</template>
-          <template #subtitle>Current address: {{ mainVehicleStore.globalAddress }}</template>
-          <template #info
-            ><strong>Global Vehicle Address:</strong> Sets the network address for device communication. E.g:
-            blueos.local</template
-          >
+      <div
+        class="flex-col h-full overflow-y-auto ml-[10px] pr-3 -mr-[10px]"
+        :class="interfaceStore.isOnSmallScreen ? 'max-w-[80vw] max-h-[90vh]' : 'max-w-[650px] max-h-[85vh]'"
+      >
+        <ExpansiblePanel no-top-divider :is-expanded="!interfaceStore.isOnPhoneScreen">
+          <template #title>User settings</template>
+          <template #info>
+            <p class="max-w-[400px]">
+              User related configuration. Here you can set the user that is currently set for this device as well as
+              create a new user account.
+            </p>
+          </template>
           <template #content>
+            <div class="flex flex-col w-full items-start">
+              <div class="flex align-center w-full justify-between pr-2 mt-1 mb-6">
+                <div>
+                  <span class="mr-2">Current user:</span>
+                  <span class="font-semibold text-2xl cursor-pointer" @click="missionStore.changeUsername">{{
+                    missionStore.username
+                  }}</span>
+                </div>
+                <v-btn
+                  id="select-profile"
+                  size="sm"
+                  icon="mdi-swap-horizontal"
+                  class="bg-transparent"
+                  variant="text"
+                  @click="missionStore.changeUsername"
+                />
+              </div>
+              <div class="flex flex-row">
+                <v-btn size="x-small" class="bg-[#FFFFFF22] -mt-3 mb-4 shadow-2" variant="flat" @click="openTutorial">
+                  Show tutorial
+                </v-btn>
+                <v-btn
+                  v-if="isElectron()"
+                  size="x-small"
+                  class="bg-[#FFFFFF22] -mt-3 mb-4 ml-2 shadow-2"
+                  variant="flat"
+                  @click="openCockpitFolder"
+                >
+                  Open Cockpit folder
+                </v-btn>
+              </div>
+            </div>
+          </template>
+        </ExpansiblePanel>
+
+        <ExpansiblePanel :is-expanded="!interfaceStore.isOnPhoneScreen">
+          <template #title>Vehicle network connection (global address)</template>
+          <template #subtitle>Current address: {{ mainVehicleStore.globalAddress }}</template>
+          <template #info>Sets the network address for device communication. E.g: blueos.local</template>
+          <template #content>
+            <v-btn
+              v-if="isElectron()"
+              size="x-small"
+              class="bg-[#FFFFFF22] mt-3 mb-2 shadow-2"
+              variant="flat"
+              @click="showDiscoveryDialog = true"
+            >
+              Search for vehicles
+            </v-btn>
             <v-form
               ref="globalAddressForm"
               v-model="globalAddressFormValid"
-              class="flex w-full mt-2"
+              class="flex w-full mt-2 mb-2"
               @submit.prevent="setGlobalAddress"
             >
-              <div class="flex justify-center align-center">
+              <div
+                class="flex justify-start items-center w-[86%] mb-4"
+                :class="interfaceStore.isOnSmallScreen ? 'scale-80' : 'scale-100'"
+                :style="
+                  interfaceStore.highlightedComponent === 'vehicle-address' && {
+                    animation: 'highlightBackground 0.5s alternate 20',
+                    borderRadius: '10px',
+                  }
+                "
+              >
                 <v-text-field
                   v-model="newGlobalAddress"
                   variant="filled"
                   type="input"
-                  :density="interfaceStore.isOnSmallScreen ? 'compact' : 'default'"
+                  density="compact"
                   hint="Address of the Vehicle. E.g: blueos.local"
-                  class="uri-input"
+                  hide-details
+                  class="w-[80%]"
                   :rules="[isValidHostAddress, isValidConnectionURI]"
                   @click:append-inner="resetGlobalAddress"
                 >
@@ -36,7 +99,7 @@
                 </v-text-field>
                 <v-btn
                   :size="interfaceStore.isOnSmallScreen ? 'small' : 'default'"
-                  class="bg-transparent -mt-5"
+                  class="bg-transparent"
                   :class="interfaceStore.isOnSmallScreen ? 'ml-1' : 'ml-5'"
                   variant="text"
                   type="submit"
@@ -47,12 +110,8 @@
             </v-form>
           </template>
         </ExpansiblePanel>
-        <ExpansiblePanel no-top-divider :is-expanded="!interfaceStore.isOnSmallScreen">
-          <template #info>
-            <strong>Mavlink2Rest Connection:</strong> Configures MAVLink over HTTP/WS. Toggle to enable/disable and
-            apply settings to take effect.
-          </template>
-          <template #title>Mavlink2Rest connection</template>
+        <ExpansiblePanel no-top-divider :is-expanded="!interfaceStore.isOnPhoneScreen">
+          <template #title>MAVLink2REST Websocket URI</template>
           <template #subtitle>
             Current address: {{ ConnectionManager.mainConnection()?.uri().toString() ?? 'none' }}<br />
             Status:
@@ -68,14 +127,17 @@
               class="flex w-full mt-2"
               @submit.prevent="setMainVehicleConnectionURI"
             >
-              <div class="flex flex-row w-full justify-between align-center">
-                <div class="w-[350px]">
+              <div class="flex flex-row w-full justify-start gap-x-8 align-center">
+                <div
+                  class="flex justify-start items-center"
+                  :class="interfaceStore.isOnSmallScreen ? 'scale-80 w-[80%]' : 'scale-100 w-[76%]'"
+                >
                   <v-text-field
-                    v-model="mainConnectionURI"
-                    :disabled="!mainVehicleStore.customMainConnectionURI.enabled"
+                    v-model="mavlink2RestWebsocketURI"
+                    :disabled="!mainVehicleStore.customMAVLink2RestWebsocketURI.enabled"
                     variant="filled"
                     type="input"
-                    :density="interfaceStore.isOnSmallScreen ? 'compact' : 'default'"
+                    density="compact"
                     hint="URI of a Mavlink2Rest web-socket"
                     :rules="[isValidSocketConnectionURI]"
                   >
@@ -83,7 +145,7 @@
                       <v-icon
                         v-tooltip.bottom="'Reset to default'"
                         color="white"
-                        :disabled="!mainVehicleStore.customMainConnectionURI.enabled"
+                        :disabled="!mainVehicleStore.customMAVLink2RestWebsocketURI.enabled"
                         @click="resetMainVehicleConnectionURI"
                       >
                         mdi-refresh
@@ -91,42 +153,38 @@
                     </template>
                   </v-text-field>
                 </div>
-
                 <v-btn
                   :size="interfaceStore.isOnSmallScreen ? 'small' : 'default'"
                   class="bg-transparent -mt-5 -ml-6"
-                  :disabled="!mainVehicleStore.customMainConnectionURI.enabled"
+                  :disabled="!mainVehicleStore.customMAVLink2RestWebsocketURI.enabled"
                   variant="text"
                   type="submit"
                 >
                   Apply
                 </v-btn>
+              </div>
+              <div class="flex justify-end mt-6">
                 <div
                   class="flex flex-col align-end text-[10px]"
                   :class="interfaceStore.isOnSmallScreen ? '-mt-3' : '-mt-5'"
                 >
                   <v-switch
-                    v-model="mainVehicleStore.customMainConnectionURI.enabled"
+                    v-model="mainVehicleStore.customMAVLink2RestWebsocketURI.enabled"
                     v-tooltip.bottom="'Enable custom'"
-                    class="-mt-5 bg-transparent"
-                    :class="interfaceStore.isOnSmallScreen ? 'mr-1' : undefined"
-                    :density="interfaceStore.isOnSmallScreen ? 'compact' : 'default'"
+                    class="-mt-5 bg-transparent mr-1 mb-[7px]"
+                    density="compact"
                     hide-details
                   />
                   <div class="-mt-[4px]">
-                    {{ mainVehicleStore.customMainConnectionURI.enabled ? 'Enabled' : 'Disabled' }}
+                    {{ mainVehicleStore.customMAVLink2RestWebsocketURI.enabled ? 'Enabled' : 'Disabled' }}
                   </div>
                 </div>
               </div>
             </v-form>
           </template>
         </ExpansiblePanel>
-        <ExpansiblePanel no-top-divider no-bottom-divider :is-expanded="!interfaceStore.isOnSmallScreen">
-          <template #info>
-            <strong>WebRTC connection:</strong> Establishes real-time communication over the web. Set the signaling
-            server URI and toggle to activate.
-          </template>
-          <template #title>WebRTC connection</template>
+        <ExpansiblePanel no-top-divider no-bottom-divider :is-expanded="!interfaceStore.isOnPhoneScreen">
+          <template #title>Video connection (WebRTC)</template>
           <template #subtitle>Current address: {{ mainVehicleStore.webRTCSignallingURI.toString() }}</template>
           <template #content>
             <v-form
@@ -135,16 +193,18 @@
               class="justify-center d-flex align-center mt-2"
               @submit.prevent="setWebRTCSignallingURI"
             >
-              <div class="flex justify-between align-center w-full">
-                <div class="w-[350px]">
+              <div class="flex flex-row w-full justify-start gap-x-8 align-center">
+                <div
+                  class="flex justify-start items-center"
+                  :class="interfaceStore.isOnSmallScreen ? 'scale-80 w-[80%]' : 'scale-100 w-[76%]'"
+                >
                   <v-text-field
                     v-model="webRTCSignallingURI"
                     :disabled="!mainVehicleStore.customWebRTCSignallingURI.enabled"
                     variant="filled"
                     type="input"
-                    :density="interfaceStore.isOnSmallScreen ? 'compact' : 'default'"
+                    density="compact"
                     hint="URI of a WebRTC Signalling Server URI"
-                    class="uri-input"
                     :rules="[isValidSocketConnectionURI]"
                   >
                     <template #append-inner>
@@ -168,6 +228,8 @@
                 >
                   Apply
                 </v-btn>
+              </div>
+              <div>
                 <div
                   class="flex flex-col align-end text-[10px]"
                   :class="interfaceStore.isOnSmallScreen ? '-mt-3' : '-mt-5'"
@@ -175,9 +237,8 @@
                   <v-switch
                     v-model="mainVehicleStore.customWebRTCSignallingURI.enabled"
                     v-tooltip.bottom="'Enable custom'"
-                    class="-mt-5 bg-transparent"
-                    :class="interfaceStore.isOnSmallScreen ? 'mr-1' : undefined"
-                    :density="interfaceStore.isOnSmallScreen ? 'compact' : 'default'"
+                    class="-mt-5 bg-transparent mr-1 mb-[7px]"
+                    density="compact"
                     hide-details
                   />
                   <div class="-mt-[4px]">
@@ -188,8 +249,8 @@
             </v-form>
           </template>
         </ExpansiblePanel>
-        <ExpansiblePanel no-bottom-divider :is-expanded="!interfaceStore.isOnSmallScreen">
-          <template #title>Custom RTC Configuration</template>
+        <ExpansiblePanel no-bottom-divider :is-expanded="!interfaceStore.isOnPhoneScreen">
+          <template #title>Custom WebRTC configuration</template>
           <template #content>
             <div class="flex justify-between mt-2 w-full">
               <v-textarea
@@ -203,16 +264,17 @@
                 class="w-full"
               />
               <div class="flex flex-col justify-around align-center w-[100px] -mr-6">
-                <GlassButton
+                <v-btn
                   :size="interfaceStore.isOnSmallScreen ? 'small' : 'default'"
-                  variant="uncontained"
-                  label="APPLY"
                   :disabled="!mainVehicleStore.customWebRTCConfiguration.enabled"
-                  label-class="font-thin text-[15px] opacity-[0.95] -ml-1"
-                  no-effects
-                  class="-mt-8"
+                  class="bg-transparent -mb-5"
+                  variant="text"
+                  type="submit"
                   @click="handleCustomRtcConfiguration"
-                />
+                >
+                  Apply
+                </v-btn>
+
                 <div class="flex flex-col align-end text-[10px] -mt-8">
                   <v-switch
                     v-model="mainVehicleStore.customWebRTCConfiguration.enabled"
@@ -232,6 +294,7 @@
       </div>
     </template>
   </BaseConfigurationView>
+  <VehicleDiscoveryDialog v-model="showDiscoveryDialog" />
 </template>
 
 <script setup lang="ts">
@@ -239,18 +302,23 @@ import { onMounted, ref, watch } from 'vue'
 
 import { defaultGlobalAddress } from '@/assets/defaults'
 import ExpansiblePanel from '@/components/ExpansiblePanel.vue'
-import GlassButton from '@/components/GlassButton.vue'
+import VehicleDiscoveryDialog from '@/components/VehicleDiscoveryDialog.vue'
+import { useSnackbar } from '@/composables/snackbar'
 import * as Connection from '@/libs/connection/connection'
 import { ConnectionManager } from '@/libs/connection/connection-manager'
-import { isValidNetworkAddress } from '@/libs/utils'
+import { isValidNetworkAddress, reloadCockpit } from '@/libs/utils'
+import { isElectron } from '@/libs/utils'
 import * as Protocol from '@/libs/vehicle/protocol/protocol'
 import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useMainVehicleStore } from '@/stores/mainVehicle'
+import { useMissionStore } from '@/stores/mission'
 
 import BaseConfigurationView from './BaseConfigurationView.vue'
 
 const mainVehicleStore = useMainVehicleStore()
 const interfaceStore = useAppInterfaceStore()
+const missionStore = useMissionStore()
+const { showSnackbar } = useSnackbar()
 
 const globalAddressForm = ref()
 const globalAddressFormValid = ref(false)
@@ -269,7 +337,7 @@ const setGlobalAddress = async (): Promise<void> => {
 
   // Temporary solution to actually set the address and connect the vehicle, since this is non-reactive today.
   // TODO: Modify the store variables to be reactive.
-  location.reload()
+  reloadCockpit(3000)
 }
 
 const resetGlobalAddress = async (): Promise<void> => {
@@ -294,10 +362,10 @@ watch(
 
 const mainConnectionForm = ref()
 const mainConnectionFormValid = ref(false)
-const mainConnectionURI = ref(mainVehicleStore.mainConnectionURI)
+const mavlink2RestWebsocketURI = ref(mainVehicleStore.MAVLink2RestWebsocketURI)
 
 const addNewVehicleConnection = async (conn: Connection.URI): Promise<void> => {
-  mainConnectionURI.value = conn
+  mavlink2RestWebsocketURI.value = conn
   vehicleConnected.value = undefined
   setTimeout(() => (vehicleConnected.value ??= false), 5000)
   try {
@@ -311,9 +379,9 @@ const addNewVehicleConnection = async (conn: Connection.URI): Promise<void> => {
 }
 
 watch(
-  () => mainVehicleStore.mainConnectionURI,
+  () => mainVehicleStore.MAVLink2RestWebsocketURI,
   (val: Connection.URI) => {
-    if (val.toString() === mainConnectionURI.value.toString()) {
+    if (val.toString() === mavlink2RestWebsocketURI.value.toString()) {
       return
     }
 
@@ -328,18 +396,18 @@ const setMainVehicleConnectionURI = async (): Promise<void> => {
     return
   }
 
-  mainVehicleStore.customMainConnectionURI = {
-    data: mainConnectionURI.value.toString(),
+  mainVehicleStore.customMAVLink2RestWebsocketURI = {
+    data: mavlink2RestWebsocketURI.value.toString(),
     enabled: true,
   }
 
-  addNewVehicleConnection(mainConnectionURI.value)
+  addNewVehicleConnection(mavlink2RestWebsocketURI.value)
 }
 
 const resetMainVehicleConnectionURI = async (): Promise<void> => {
-  mainVehicleStore.customMainConnectionURI = {
+  mainVehicleStore.customMAVLink2RestWebsocketURI = {
     enabled: false,
-    data: mainVehicleStore.defaultMainConnectionURI.toString(),
+    data: mainVehicleStore.defaultMAVLink2RestWebsocketURI.toString(),
   }
 }
 
@@ -350,7 +418,7 @@ const webRTCSignallingURI = ref(mainVehicleStore.webRTCSignallingURI)
 const addWebRTCConnection = async (conn: Connection.URI): Promise<void> => {
   webRTCSignallingURI.value = conn
 
-  // This works as a reset for the custom URI, and its not needed in mainConnectionURI since on Add from
+  // This works as a reset for the custom URI, and its not needed in MAVLink2RestWebsocketURI since on Add from
   // ConnectionManager it will be set.
   if (!mainVehicleStore.customWebRTCSignallingURI.enabled) {
     mainVehicleStore.customWebRTCSignallingURI.data = conn.toString()
@@ -359,7 +427,7 @@ const addWebRTCConnection = async (conn: Connection.URI): Promise<void> => {
   // Temporary solution to actually set WebRTC URI, since right now we cannot just make reactive because streams will
   // be kept open.
   // TODO: handle video stream re connection
-  location.reload()
+  reloadCockpit(3000)
 }
 
 watch(
@@ -430,7 +498,7 @@ const updateWebRtcConfiguration = (): void => {
   try {
     const newConfig = JSON.parse(customRtcConfiguration.value)
     mainVehicleStore.customWebRTCConfiguration.data = newConfig
-    location.reload()
+    reloadCockpit(3000)
   } catch (error) {
     alert(`Could not update WebRTC configuration. ${error}.`)
   }
@@ -449,15 +517,35 @@ const tryToPrettifyRtcConfig = (): void => {
   }
 }
 
+const openTutorial = (): void => {
+  interfaceStore.isMainMenuVisible = false
+  interfaceStore.configComponent = -1
+  interfaceStore.isTutorialVisible = true
+}
+
 watch(customRtcConfiguration, () => tryToPrettifyRtcConfig())
 
 onMounted(() => {
   tryToPrettifyRtcConfig()
 })
-</script>
 
+const showDiscoveryDialog = ref(false)
+
+const openCockpitFolder = (): void => {
+  if (isElectron() && window.electronAPI) {
+    window.electronAPI?.openCockpitFolder()
+  } else {
+    showSnackbar({
+      message: 'This feature is only available in the desktop version of Cockpit.',
+      duration: 3000,
+      variant: 'error',
+      closeButton: true,
+    })
+  }
+}
+</script>
 <style scoped>
 .uri-input {
-  width: 350px;
+  width: 100% !important;
 }
 </style>

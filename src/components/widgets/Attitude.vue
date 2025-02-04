@@ -2,55 +2,63 @@
   <div class="main">
     <canvas ref="canvasRef" :width="canvasSize.width" :height="canvasSize.height" />
   </div>
-  <v-dialog v-model="widget.managerVars.configMenuOpen" min-width="400" max-width="35%">
-    <v-card class="pa-2">
-      <v-card-title>Attitude widget config</v-card-title>
+  <v-dialog v-model="widgetStore.widgetManagerVars(widget.hash).configMenuOpen" min-width="400" max-width="45%">
+    <v-card class="pa-4" :style="interfaceStore.globalGlassMenuStyles" style="border-radius: 15px">
+      <v-card-title class="text-center">Attitude widget config</v-card-title>
       <v-card-text>
-        <v-switch
-          class="ma-1"
-          label="Show roll/pitch values"
-          :model-value="widget.options.showRollPitchValues"
-          :color="widget.options.showRollPitchValues ? 'rgb(0, 20, 80)' : undefined"
-          hide-details
-          @change="widget.options.showRollPitchValues = !widget.options.showRollPitchValues"
-        />
-        <v-switch
-          class="ma-1"
-          label="Show center aim"
-          :model-value="widget.options.showCenterAim"
-          :color="widget.options.showCenterAim ? 'rgb(0, 20, 80)' : undefined"
-          hide-details
-          @change="widget.options.showCenterAim = !widget.options.showCenterAim"
-        />
-        <v-switch
-          class="ma-1"
-          label="Show pitch lines"
-          :model-value="widget.options.showPitchLines"
-          :color="widget.options.showPitchLines ? 'rgb(0, 20, 80)' : undefined"
-          hide-details
-          @change="widget.options.showPitchLines = !widget.options.showPitchLines"
-        />
-        <span>Distance between pitch lines</span>
+        <div class="flex justify-center gap-x-8 mb-4">
+          <v-switch
+            class="ma-1"
+            label="Show roll/pitch values"
+            :model-value="widget.options.showRollPitchValues"
+            :color="widget.options.showRollPitchValues ? 'white' : undefined"
+            hide-details
+            @change="widget.options.showRollPitchValues = !widget.options.showRollPitchValues"
+          />
+          <v-switch
+            class="ma-1"
+            label="Show center aim"
+            :model-value="widget.options.showCenterAim"
+            :color="widget.options.showCenterAim ? 'white' : undefined"
+            hide-details
+            @change="widget.options.showCenterAim = !widget.options.showCenterAim"
+          />
+          <v-switch
+            class="ma-1"
+            label="Show pitch lines"
+            :model-value="widget.options.showPitchLines"
+            :color="widget.options.showPitchLines ? 'white' : undefined"
+            hide-details
+            @change="widget.options.showPitchLines = !widget.options.showPitchLines"
+          />
+        </div>
         <v-slider
-          v-model="widget.options.pitchHeightFactor"
-          label="Pitch lines gain factor"
-          :min="1"
-          :max="2500"
+          v-model="widget.options.cameraFOV"
+          color="white"
+          label="Camera vertical FOV"
+          :min="20"
+          :max="180"
           thumb-label
         />
-        <span>Center circle radius</span>
         <v-slider
           v-model="widget.options.desiredAimRadius"
           label="Center circle radius"
+          color="white"
           :min="10"
           :max="300"
           thumb-label
         />
-        <v-expansion-panels>
-          <v-expansion-panel>
+        <v-expansion-panels theme="dark">
+          <v-expansion-panel class="bg-[#FFFFFF22]">
             <v-expansion-panel-title>Color</v-expansion-panel-title>
             <v-expansion-panel-text class="pa-2">
-              <v-color-picker v-model="widget.options.hudColor" :swatches="colorSwatches" show-swatches />
+              <v-color-picker
+                v-model="widget.options.hudColor"
+                class="ma-1 bg-[#FFFFFF11] text-white"
+                :swatches="colorSwatches"
+                show-swatches
+                width="100%"
+              />
             </v-expansion-panel-text>
           </v-expansion-panel>
         </v-expansion-panels>
@@ -60,17 +68,19 @@
 </template>
 
 <script setup lang="ts">
-import { useWindowSize } from '@vueuse/core'
+import { useElementVisibility, useWindowSize } from '@vueuse/core'
 import gsap from 'gsap'
 import { computed, nextTick, onBeforeMount, onMounted, reactive, ref, toRefs, watch } from 'vue'
 
 import { datalogger, DatalogVariable } from '@/libs/sensors-logging'
 import { constrain, degrees, radians, resetCanvas, round } from '@/libs/utils'
+import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useMainVehicleStore } from '@/stores/mainVehicle'
 import { useWidgetManagerStore } from '@/stores/widgetManager'
 import type { Widget } from '@/types/widgets'
 
 const widgetStore = useWidgetManagerStore()
+const interfaceStore = useAppInterfaceStore()
 
 datalogger.registerUsage(DatalogVariable.roll)
 datalogger.registerUsage(DatalogVariable.pitch)
@@ -95,10 +105,21 @@ type RenderVariables = {
    * Vertical height of the pitch line for each angle
    */
   pitchLinesHeights: { [angle: string]: number }
+
+  /**
+   * Camera tilt angle, in degrees
+   */
+  cameraTiltDeg: number
+
+  /**
+   * Rendering pitch value, in degrees
+   */
+  pitchDegrees: number
 }
 
 const rollAngleDeg = ref(0)
 const pitchAngleDeg = ref(0)
+const cameraTiltDeg = ref(undefined as number | undefined)
 
 // Pitch angles for which horizontal indication lines are rendered.
 const pitchAngles = [-90, -70, -45, -30, -10, 0, 10, 30, 45, 70, 90]
@@ -107,23 +128,28 @@ const pitchAngles = [-90, -70, -45, -30, -10, 0, 10, 30, 45, 70, 90]
 const renderVars = reactive<RenderVariables>({
   rollDegrees: 0,
   pitchLinesHeights: {},
+  cameraTiltDeg: 0,
+  pitchDegrees: 0,
 })
 
 // Pre-defined HUD colors
 const colorSwatches = ref([['#FFFFFF'], ['#FF2D2D'], ['#0ADB0ACC']])
 
+const defaultOptions = {
+  showCenterAim: true,
+  showPitchLines: true,
+  showRollPitchValues: true,
+  desiredAimRadius: 150,
+  hudColor: colorSwatches.value[0][0],
+  cameraFOV: 64,
+}
 onBeforeMount(() => {
   // Set initial widget options if they don't exist
-  if (Object.keys(widget.value.options).length === 0) {
-    widget.value.options = {
-      showCenterAim: true,
-      showPitchLines: true,
-      showRollPitchValues: true,
-      desiredAimRadius: 150,
-      pitchHeightFactor: 300,
-      hudColor: colorSwatches.value[0][0],
+  Object.entries(defaultOptions).forEach(([key, value]) => {
+    if (widget.value.options[key] === undefined) {
+      widget.value.options[key] = value
     }
-  }
+  })
 })
 
 onMounted(() => {
@@ -163,10 +189,29 @@ watch(store.attitude, (attitude) => {
   }
 })
 
+watch(store.genericVariables, (message: Record<string, unknown>) => {
+  const new_tilt = message.cameraTiltDeg as number
+  if (cameraTiltDeg.value === undefined || Math.abs(new_tilt - cameraTiltDeg.value) > 0.1) {
+    cameraTiltDeg.value = new_tilt
+  }
+})
+
 // Returns the projected height of a pitch line for a given angle
 const angleY = (angle: number): number => {
-  return (widget.value.options.pitchHeightFactor * radians(angle)) / Math.cos(radians(angle))
+  // if we had 180 deg of fov, top would be 90
+  // if we had 90 deg of fov, top would be 45
+  // then we scale the angle accordingly.
+  const angle_factor = 180 / widget.value.options.cameraFOV
+  // now we scale the current angle to 180 deg fov
+  const scaled_angle = angle / 180
+  const ret = scaled_angle * angle_factor * canvasSize.value.height
+  return ret
 }
+
+const canvasVisible = useElementVisibility(canvasRef)
+watch(canvasVisible, (isVisible, wasVisible) => {
+  if (isVisible && !wasVisible) renderCanvas()
+})
 
 const renderCanvas = (): void => {
   if (canvasRef.value === undefined || canvasRef.value === null) return
@@ -193,6 +238,11 @@ const renderCanvas = (): void => {
 
   ctx.translate(halfCanvasWidth, halfCanvasHeight)
   ctx.rotate(radians(renderVars.rollDegrees))
+
+  let centerPos = 0
+  if (cameraTiltDeg.value !== undefined) {
+    centerPos = -angleY(renderVars.cameraTiltDeg + renderVars.pitchDegrees)
+  }
 
   // Draw line for each angle
   for (const [angle, height] of Object.entries(renderVars.pitchLinesHeights)) {
@@ -230,20 +280,20 @@ const renderCanvas = (): void => {
   if (widget.value.options.showCenterAim) {
     // Draw left side of the aim circle
     ctx.beginPath()
-    ctx.moveTo(-aimRadius.value, 0)
-    ctx.lineTo(-1.5 * aimRadius.value, 0)
+    ctx.moveTo(-aimRadius.value, centerPos)
+    ctx.lineTo(-1.5 * aimRadius.value, centerPos)
     ctx.stroke()
     ctx.beginPath()
-    ctx.arc(0, 0, aimRadius.value, radians(135), radians(225))
+    ctx.arc(0, centerPos, aimRadius.value, radians(135), radians(225))
     ctx.stroke()
 
     // Draw right side of the aim circle
     ctx.beginPath()
-    ctx.moveTo(aimRadius.value, 0)
-    ctx.lineTo(1.5 * aimRadius.value, 0)
+    ctx.moveTo(aimRadius.value, centerPos)
+    ctx.lineTo(1.5 * aimRadius.value, centerPos)
     ctx.stroke()
     ctx.beginPath()
-    ctx.arc(0, 0, aimRadius.value, radians(-45), radians(45))
+    ctx.arc(0, centerPos, aimRadius.value, radians(-45), radians(45))
     ctx.stroke()
   }
 
@@ -278,14 +328,23 @@ const renderCanvas = (): void => {
 // Update the height of each pitch line when the vehicle pitch is updated
 watch(pitchAngleDeg, () => {
   pitchAngles.forEach((angle: number) => {
-    const y = -round(angleY(angle - degrees(store.attitude.pitch)), 2)
+    const y = -round(angleY(angle + renderVars.cameraTiltDeg - degrees(store.attitude.pitch)), 2)
     gsap.to(renderVars.pitchLinesHeights, 0.1, { [angle]: y })
   })
+  gsap.to(renderVars, 0.1, { pitchDegrees: pitchAngleDeg.value })
 })
 
 // Update the HUD roll angle when the vehicle roll is updated
 watch(rollAngleDeg, () => {
   gsap.to(renderVars, 0.1, { rollDegrees: -round(rollAngleDeg.value, 2) })
+})
+
+watch(cameraTiltDeg, () => {
+  gsap.to(renderVars, 0.1, { cameraTiltDeg: cameraTiltDeg.value })
+  pitchAngles.forEach((angle: number) => {
+    const y = -round(angleY(angle + renderVars.cameraTiltDeg - degrees(store.attitude.pitch)), 2)
+    gsap.to(renderVars.pitchLinesHeights, 0.1, { [angle]: y })
+  })
 })
 
 // Update canvas whenever reference variables changes

@@ -2,23 +2,44 @@
   <BaseConfigurationView>
     <template #title>Development configuration</template>
     <template #content>
-      <div class="max-w-[87vw] max-h-[80vh] overflow-y-auto -mr-4">
+      <div
+        class="max-h-[85vh] overflow-y-auto -mr-4"
+        :class="interfaceStore.isOnSmallScreen ? 'max-w-[85vw]' : 'max-w-[50vw]'"
+      >
         <div
           class="flex flex-col justify-between items-center w-full"
-          :class="interfaceStore.isOnPhoneScreen ? 'scale-[80%] mt-0 -mb-3' : 'scale-100 mt-4'"
+          :class="interfaceStore.isOnSmallScreen ? 'scale-[80%] mt-0 -mb-3' : 'scale-95 mt-4'"
         >
-          <div class="flex flex-row gap-x-[50px]">
-            <v-switch v-model="devStore.developmentMode" label="Development mode" color="white" />
+          <div class="flex flex-row gap-x-[40px]">
+            <v-switch
+              v-model="devStore.developmentMode"
+              label="Development mode"
+              color="white"
+              hide-details
+              class="min-w-[155px]"
+            />
             <v-switch
               v-model="devStore.enableBlueOsSettingsSync"
               label="BlueOS settings sync"
               color="white"
+              hide-details
+              class="min-w-[155px]"
+              @update:model-value="reloadCockpit"
+            />
+            <v-switch
+              v-model="devStore.enableUsageStatisticsTelemetry"
+              label="Usage statistics telemetry"
+              color="white"
+              hide-details
+              class="min-w-[155px]"
               @update:model-value="reloadCockpit"
             />
             <v-switch
               v-model="devStore.enableSystemLogging"
               label="Enable system logging"
               color="white"
+              hide-details
+              class="min-w-[155px]"
               @update:model-value="reloadCockpit"
             />
           </div>
@@ -33,8 +54,19 @@
             thumb-label="hover"
           />
         </div>
-        <ExpansiblePanel :is-expanded="!interfaceStore.isOnSmallScreen">
-          <template #title>System logs</template>
+        <ExpansiblePanel :is-expanded="!interfaceStore.isOnPhoneScreen">
+          <template #title>
+            <div class="flex justify-between">
+              <span>System logs</span>
+              <span class="text-sm text-gray-300 cursor-pointer" @click.stop="deleteOldLogs">
+                <v-tooltip text="Delete old logs">
+                  <template #activator="{ props }">
+                    <v-icon left class="mr-2" v-bind="props">mdi-delete-sweep</v-icon>
+                  </template>
+                </v-tooltip>
+              </span>
+            </div>
+          </template>
           <template #content>
             <v-data-table
               :items="systemLogsData"
@@ -44,7 +76,10 @@
               class="w-full max-h-[60%] rounded-md bg-[#FFFFFF11]"
             >
               <template #item.actions="{ item }">
-                <div class="text-center cursor-pointer icon-btn mdi mdi-download" @click="downloadLog(item.name)" />
+                <div class="flex justify-center space-x-2">
+                  <div class="cursor-pointer icon-btn mdi mdi-download" @click="downloadLog(item.name)" />
+                  <div class="cursor-pointer icon-btn mdi mdi-delete" @click="deleteLog(item.name)" />
+                </div>
               </template>
             </v-data-table>
           </template>
@@ -64,6 +99,7 @@ import { ref } from 'vue'
 
 import ExpansiblePanel from '@/components/ExpansiblePanel.vue'
 import { type SystemLog, cockpitSytemLogsDB } from '@/libs/system-logging'
+import { reloadCockpit } from '@/libs/utils'
 import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useDevelopmentStore } from '@/stores/development'
 
@@ -108,7 +144,32 @@ const downloadLog = async (logName: string): Promise<void> => {
   saveAs(logBlob, logName)
 }
 
-const reloadCockpit = (): void => location.reload()
+const deleteLog = async (logName: string): Promise<void> => {
+  await cockpitSytemLogsDB.removeItem(logName)
+  systemLogsData.value = systemLogsData.value.filter((log) => log.name !== logName)
+}
+
+const deleteOldLogs = async (): Promise<void> => {
+  const yesterday = new Date()
+  yesterday.setDate(yesterday.getDate() - 1)
+
+  const logsToDelete: string[] = []
+  await cockpitSytemLogsDB.iterate((log: SystemLog, logName: string) => {
+    const logDate = new Date(log.initialDate)
+    if (logDate < yesterday) {
+      logsToDelete.push(logName)
+    }
+  })
+
+  for (const logName of logsToDelete) {
+    await cockpitSytemLogsDB.removeItem(logName)
+  }
+
+  systemLogsData.value = systemLogsData.value.filter((log) => {
+    const logDate = new Date(log.initialDate)
+    return logDate >= yesterday
+  })
+}
 </script>
 <style scoped>
 .custom-header {

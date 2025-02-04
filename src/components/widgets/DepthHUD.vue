@@ -2,23 +2,29 @@
   <div class="main">
     <canvas ref="canvasRef" :width="canvasSize.width" :height="canvasSize.height" />
   </div>
-  <v-dialog v-model="widget.managerVars.configMenuOpen" min-width="400" max-width="35%">
-    <v-card class="pa-2">
-      <v-card-title>Depth HUD config</v-card-title>
+  <v-dialog v-model="widgetStore.widgetManagerVars(widget.hash).configMenuOpen" min-width="400" max-width="35%">
+    <v-card class="pa-2" :style="interfaceStore.globalGlassMenuStyles">
+      <v-card-title class="text-center">Depth HUD config</v-card-title>
       <v-card-text>
         <v-switch
           class="ma-1"
           label="Show height value"
           :model-value="widget.options.showDepthValue"
-          :color="widget.options.showDepthValue ? 'rgb(0, 20, 80)' : undefined"
+          :color="widget.options.showDepthValue ? 'white' : undefined"
           hide-details
           @change="widget.options.showDepthValue = !widget.options.showDepthValue"
         />
-        <v-expansion-panels>
-          <v-expansion-panel>
+        <v-expansion-panels theme="dark">
+          <v-expansion-panel class="bg-[#FFFFFF11] text-white">
             <v-expansion-panel-title>Color</v-expansion-panel-title>
             <v-expansion-panel-text>
-              <v-color-picker v-model="widget.options.hudColor" class="ma-2" :swatches="colorSwatches" show-swatches />
+              <v-color-picker
+                v-model="widget.options.hudColor"
+                class="ma-2 text-white bg-[#FFFFFF11]"
+                :swatches="colorSwatches"
+                width="100%"
+                show-swatches
+              />
             </v-expansion-panel-text>
           </v-expansion-panel>
         </v-expansion-panels>
@@ -28,16 +34,20 @@
 </template>
 
 <script setup lang="ts">
-import { useWindowSize } from '@vueuse/core'
+import { useElementVisibility, useWindowSize } from '@vueuse/core'
 import { colord } from 'colord'
 import gsap from 'gsap'
+import { unit } from 'mathjs'
 import { computed, nextTick, onBeforeMount, onMounted, reactive, ref, toRefs, watch } from 'vue'
 
 import { datalogger, DatalogVariable } from '@/libs/sensors-logging'
-import { constrain, range, resetCanvas, round } from '@/libs/utils'
+import { unitAbbreviation } from '@/libs/units'
+import { range, resetCanvas, round } from '@/libs/utils'
+import { useAppInterfaceStore } from '@/stores/appInterface'
 import { useMainVehicleStore } from '@/stores/mainVehicle'
 import { useWidgetManagerStore } from '@/stores/widgetManager'
 import type { Widget } from '@/types/widgets'
+const interfaceStore = useAppInterfaceStore()
 
 const widgetStore = useWidgetManagerStore()
 
@@ -76,6 +86,7 @@ const maxRecentDepth = computed(() => Math.max(...recentDepths.value))
 const maxGraphDepth = computed(() => (1.3 * maxRecentDepth.value > 10 ? 1.3 * maxRecentDepth.value : 10))
 const depthGraphDistances = computed(() => range(0, maxGraphDepth.value + 1))
 const maxDepth = computed(() => Math.max(...depthGraphDistances.value))
+const currentUnit = computed(() => unitAbbreviation[interfaceStore.displayUnitPreferences.distance])
 
 onBeforeMount(() => {
   // Set initial widget options if they don't exist
@@ -100,16 +111,16 @@ const canvasSize = computed(() => ({
 
 // The implementation below makes sure we don't update the Depth value in the widget whenever
 // the system Depth (from vehicle) updates, preventing unnecessary performance bottlenecks.
-watch(
-  () => store.altitude.msl,
-  (newMslAltitude) => {
-    const newDepth = -1 * constrain(newMslAltitude, newMslAltitude, 0)
-    const depthDiff = Math.abs(newDepth - (depth.value || 0))
-    if (depthDiff > 0.1) {
-      passedDepths.value.push(newDepth)
-    }
-  }
-)
+watch(store.altitude, () => {
+  const altitude = store.altitude.msl
+  const newDepth = unit(-altitude.value, altitude.toJSON().unit)
+
+  const depthDiff = Math.abs(newDepth.value - (depth.value || 0))
+  if (depthDiff < 0.1) return
+
+  const depthConverted = newDepth.to(interfaceStore.displayUnitPreferences.distance)
+  passedDepths.value.push(depthConverted.toJSON().value)
+})
 
 // Returns the projected Y position of the depth line for a given distance
 const distanceY = (altitude: number): number => {
@@ -165,7 +176,7 @@ const renderCanvas = (): void => {
       ctx.lineWidth = '2'
       ctx.moveTo(canvasWidth - stdPad - 3.3 * linesFontSize, y + initialPaddingY)
       ctx.lineTo(stdPad + 3.9 * refFontSize + refTriangleSize, y + initialPaddingY)
-      ctx.fillText(`${distance} m`, canvasWidth - stdPad - 3 * linesFontSize, y + initialPaddingY)
+      ctx.fillText(`${distance} ${currentUnit.value}`, canvasWidth - stdPad - 3 * linesFontSize, y + initialPaddingY)
     }
     ctx.stroke()
   }
@@ -180,7 +191,7 @@ const renderCanvas = (): void => {
     ctx.textAlign = 'right'
     ctx.font = `bold ${refFontSize}px Arial`
     ctx.fillText(
-      `${depth.value.toFixed(1)} m`,
+      `${depth.value.toFixed(1)} ${currentUnit.value}`,
       stdPad + 4.3 * refFontSize - refTriangleSize - stdPad,
       indicatorY + initialPaddingY
     )
@@ -222,6 +233,11 @@ watch(depth, () => {
 watch([renderVars, canvasSize, widget.value.options], () => {
   if (!widgetStore.isWidgetVisible(widget.value)) return
   nextTick(() => renderCanvas())
+})
+
+const canvasVisible = useElementVisibility(canvasRef)
+watch(canvasVisible, (isVisible, wasVisible) => {
+  if (isVisible && !wasVisible) renderCanvas()
 })
 </script>
 

@@ -1,3 +1,5 @@
+import { Unit } from 'mathjs'
+
 import type { Type } from '@/libs/connection/m2r/messages/mavlink2rest'
 import { MavCmd, MavResult } from '@/libs/connection/m2r/messages/mavlink2rest-enum'
 import { AlertLevel } from '@/types/alert'
@@ -108,8 +110,7 @@ export class Coordinates {
 export class CommandAck {
   command: Type<MavCmd>
   result: Type<MavResult>
-  progress: number
-  resultText: string
+  progress: number | undefined
   targetSystem: number
   targetComponent: number
 
@@ -143,7 +144,7 @@ export class Attitude {
  * Altitude related data
  */
 export class Altitude {
-  msl: number // Mean Sea Level, in meters
+  msl: Unit // Mean Sea Level altitude
   rel: number // Relative altitude, in meters
   /**
    * Create object

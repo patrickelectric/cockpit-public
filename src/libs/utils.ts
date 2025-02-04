@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import Swal from 'sweetalert2'
+import { useInteractionDialog } from '@/composables/interactionDialog'
+
+const { showDialog } = useInteractionDialog()
 
 export const constrain = (value: number, min: number, max: number): number => {
   return Math.max(Math.min(value, max), min)
@@ -81,6 +83,19 @@ export const isValidNetworkAddress = (maybeAddress: string): boolean => {
   return false
 }
 
+export const isValidURL = (maybeURL: string): boolean => {
+  if (!maybeURL) {
+    return false
+  }
+
+  try {
+    new URL(maybeURL)
+    return true
+  } catch (error) {
+    return false
+  }
+}
+
 export const formatBytes = (bytes: number, decimals = 2): string => {
   if (!bytes) return '0 Bytes'
 
@@ -120,6 +135,63 @@ export const tryOrAlert = async (tryFunction: () => Promise<void>): Promise<void
   try {
     await tryFunction()
   } catch (error) {
-    Swal.fire({ text: error as string, icon: 'error' })
+    showDialog({ message: error as string, variant: 'error' })
+  }
+}
+
+/**
+ * Wait till the next tick to reload Cockpit
+ * @param {number} timeout The time to wait before reloading, in milliseconds. Default value is 500 ms.
+ */
+export const reloadCockpit = (timeout = 500): void => {
+  const restartMessage = `Restarting Cockpit in ${timeout / 1000} seconds...`
+  console.log(restartMessage)
+  showDialog({ message: restartMessage, variant: 'info', timer: timeout })
+  setTimeout(() => location.reload(), timeout)
+}
+
+/**
+ * Detects if the application is running in Electron
+ * @returns {boolean} True if running in Electron, false otherwise
+ */
+export const isElectron = (): boolean => {
+  // Check if the userAgent contains 'electron' (for renderer process)
+  if (typeof navigator === 'object' && typeof navigator.userAgent === 'string') {
+    return navigator.userAgent.toLowerCase().includes('electron')
+  }
+
+  // Check if the process object exists and contains 'electron' (for main process)
+  if (
+    typeof process === 'object' &&
+    typeof process.versions === 'object' &&
+    typeof process.versions.electron === 'string'
+  ) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Copy text to clipboard
+ * @param {string} text The text to copy
+ * @returns {Promise<void>} A promise that resolves when the text is copied
+ */
+export const copyToClipboard = async (text: string): Promise<void> => {
+  try {
+    if (navigator && navigator.clipboard) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      window.scrollTo(0, 0)
+    }
+  } catch (error) {
+    throw new Error(`Failed to copy text. Error: ${error}`)
   }
 }

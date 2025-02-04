@@ -4,6 +4,7 @@ declare module 'gamepad.js'
 declare module 'vuetify'
 declare module 'vuetify/lib/components'
 declare module 'vuetify/lib/directives'
+declare module '@peermetrics/webrtc-stats'
 
 declare module 'vue-virtual-scroller' {
   import Vue, { ComponentOptions, PluginObject, Component } from 'vue'
@@ -23,4 +24,10 @@ declare module 'vue-virtual-scroller' {
   export function IdState(options?: { idProp?: (vm: unknown) => unknown }): ComponentOptions<Vue> | typeof Vue
 
   export default plugin
+}
+
+declare module 'vue-draggable-resizable' {
+  import { DefineComponent } from 'vue'
+  const component: DefineComponent<Record<string, never>>
+  export default component
 }

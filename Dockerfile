@@ -23,6 +23,10 @@ LABEL authors='[\
     {\
         "name": "Patrick José Pereira",\
         "email": "patrick@bluerobotics.com"\
+    },\
+    {\
+        "name": "Arturo Manzoli",\
+        "email": "arturo@bluerobotics.com"\
     }\
 ]'
 LABEL company='{\
@@ -56,6 +60,8 @@ LABEL tags='[\
 LABEL links='{\
         "support": "https://discuss.bluerobotics.com/c/bluerobotics-software"\
     }'
+LABEL readme="https://raw.githubusercontent.com/bluerobotics/cockpit/master/README.md"
+
 
 COPY ./dist /cockpit
 ENTRYPOINT ["simple-http-server", "--index", "cockpit"]

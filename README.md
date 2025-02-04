@@ -1,10 +1,28 @@
 <div align="center">
-  <img src="./public/images/cockpit-banner.png"><br>
+  <img style="width: 40%" src="./public/images/cockpit-banner.png"><br>
 </div>
+<br>
+<br>
+<div align="center">
+  <img style="width: 55%" src="./public/images/screen.png"><br>
+</div>
+<br>
 
-------------------------
+**An intuitive and customizable cross-platform ground control station for remote vehicles of all types. [Click here for a demo!](https://docs.bluerobotics.com/cockpit)**
 
-An intuitive and customizable cross-platform ground control station for remote vehicles of all types.
+[![Test, Build and Deploy Images](https://github.com/bluerobotics/cockpit/actions/workflows/ci.yml/badge.svg)](https://github.com/bluerobotics/cockpit/actions/workflows/ci.yml)
+![Downloads](https://img.shields.io/github/downloads/bluerobotics/cockpit/total?label=Downloads)
+
+[![Latest Beta](https://img.shields.io/github/v/tag/bluerobotics/cockpit.svg?label=Latest%20Beta)
+![Date](https://img.shields.io/github/release-date-pre/bluerobotics/cockpit?label=Date)](https://github.com/bluerobotics/cockpit/releases)
+
+[![Docker](https://img.shields.io/docker/v/bluerobotics/cockpit?label=Docker&style=flat)
+![Pulls](https://img.shields.io/docker/pulls/bluerobotics/cockpit?label=Pulls)
+![Size](https://img.shields.io/docker/image-size/bluerobotics/cockpit?label=Size)](https://hub.docker.com/r/bluerobotics/cockpit/tags)
+
+# Standard Usage
+
+**See [our documentation](https://blueos.cloud/docs/extensions/cockpit/1.0/overview/)** 📖
 
 # Development
 

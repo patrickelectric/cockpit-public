@@ -1,6 +1,10 @@
 <template>
-  <v-dialog v-model="internalShowDialog" :persistent="persistent" :width="maxWidth || '600px'">
-    <v-card :width="maxWidth || '600px'" class="main-dialog px-2 rounded-lg">
+  <v-dialog v-model="internalShowDialog" :persistent="persistent" :width="maxWidth || 'auto'">
+    <v-card
+      :width="maxWidth || 'auto'"
+      class="main-dialog px-2 rounded-lg"
+      :style="interfaceStore.globalGlassMenuStyles"
+    >
       <v-card-title>
         <div
           v-if="title"
@@ -32,8 +36,16 @@
           <component :is="contentComponent"></component>
         </template>
       </v-card-text>
+      <v-progress-linear
+        v-if="props.timer"
+        :color="props.variant === 'error' ? 'red' : 'green'"
+        striped
+        :model-value="timerCounter"
+        height="5"
+        class="w-full"
+      />
       <div class="flex justify-center w-full px-10">
-        <v-divider class="opacity-10 border-[#fafafa]"></v-divider>
+        <v-divider v-if="!props.timer" class="opacity-10 border-[#fafafa]"></v-divider>
       </div>
       <v-card-actions>
         <slot v-if="hasActionsSlot" name="actions"></slot>
@@ -68,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, useSlots, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, useSlots, watch } from 'vue'
 
 import { useInteractionDialog } from '@/composables/interactionDialog'
 import { useAppInterfaceStore } from '@/stores/appInterface'
@@ -81,7 +93,7 @@ const slots = useSlots()
 /**
  * Interface to an array of buttons for the Interaction Dialog's footer
  */
-interface Action {
+export interface Action {
   /**
    * Button Text
    */
@@ -135,33 +147,39 @@ interface Props {
   /**
    * The variant of the dialog, determining the icon and color.
    */
-  variant: 'info' | 'success' | 'error' | 'warning' | 'text-only'
+  variant?: 'info' | 'success' | 'error' | 'warning' | 'text-only'
   /**
    * Message to display in the dialog. If an array, elements will be displayed as an item list.
    */
-  message: string | string[]
+  message?: string | string[]
   /**
    * Persistent dialogs can't be closed with 'esc' or a backdrop click.
    */
   persistent?: boolean
+  /**
+   *
+   */
+  timer?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   showDialog: false,
   title: '',
   contentComponent: '',
-  maxWidth: 600,
+  maxWidth: 'auto',
   actions: () => [],
   variant: 'info',
   message: '',
   persistent: false,
+  timer: 0,
 })
 
 const emit = defineEmits(['update:showDialog', 'confirmed', 'dismissed'])
 
 const internalShowDialog = ref(props.showDialog)
-
 const isArrayMessage = computed(() => Array.isArray(props.message))
+const timerCounter = ref(100)
+const timerId = ref<number | null>(null)
 
 const iconType = computed(() => {
   switch (props.variant) {
@@ -180,7 +198,6 @@ const iconColor = computed(() => {
   return props.variant === 'success' ? 'green' : 'yellow'
 })
 
-// Check if the actions slot has been provided
 const hasActionsSlot = computed(() => !!slots.actions)
 
 watch(
@@ -190,11 +207,44 @@ watch(
   }
 )
 
+onMounted(() => {
+  if (props.timer) {
+    startTimer()
+  }
+})
+
+const startTimer = (): void => {
+  timerCounter.value = 100
+  const interval = 100
+  const step = (interval / props.timer) * 100
+
+  timerId.value = setInterval(() => {
+    timerCounter.value -= step
+    if (timerCounter.value <= 0) {
+      stopTimer()
+      handleAction(() => (internalShowDialog.value = false))
+      emit('dismissed')
+    }
+  }, interval) as unknown as number
+}
+
+const stopTimer = (): void => {
+  if (timerId.value !== null) {
+    clearInterval(timerId.value)
+    timerId.value = null
+  }
+}
+
+onUnmounted(() => {
+  stopTimer()
+})
+
 watch(internalShowDialog, (newVal) => {
   if (!newVal) {
-    closeDialog()
+    stopTimer()
     emit('update:showDialog', newVal)
     emit('dismissed')
+    closeDialog()
   }
 })
 
@@ -206,10 +256,6 @@ const handleAction = (action: () => void): void => {
 
 <style scoped>
 .main-dialog {
-  color: white;
-  border: 1px solid #fafafa33;
-  background-color: #aaaaaa44;
-  backdrop-filter: blur(30px);
   box-shadow: 0px 4px 4px 0px #0000004c, 0px 8px 12px 6px #00000026;
 }
 </style>

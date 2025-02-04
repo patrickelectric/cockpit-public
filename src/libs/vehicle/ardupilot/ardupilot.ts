@@ -1,5 +1,12 @@
 import { differenceInMilliseconds } from 'date-fns'
+import { unit } from 'mathjs'
 
+import {
+  createDataLakeVariable,
+  DataLakeVariable,
+  getDataLakeVariableInfo,
+  setDataLakeVariableData,
+} from '@/libs/actions/data-lake'
 import { sendMavlinkMessage } from '@/libs/communication/mavlink'
 import type { MAVLinkMessageDictionary, Package, Type } from '@/libs/connection/m2r/messages/mavlink2rest'
 import {
@@ -19,7 +26,7 @@ import {
 import { MavFrame } from '@/libs/connection/m2r/messages/mavlink2rest-enum'
 import { type Message } from '@/libs/connection/m2r/messages/mavlink2rest-message'
 import { SignalTyped } from '@/libs/signal'
-import { round, sleep } from '@/libs/utils'
+import { degrees, round, sleep } from '@/libs/utils'
 import {
   type ArduPilotParameterSetData,
   alertLevelFromMavSeverity,
@@ -44,6 +51,7 @@ import type { MetadataFile } from '@/types/ardupilot-metadata'
 import { type MissionLoadingCallback, type Waypoint, defaultLoadingCallback } from '@/types/mission'
 
 import * as Vehicle from '../vehicle'
+import { flattenData } from './data-flattener'
 import { defaultMessageFrequency } from './defaults'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -53,7 +61,7 @@ export type ArduPilot = ArduPilotVehicle<any>
  * Generic ArduPilot vehicle
  */
 export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Modes> {
-  _altitude = new Altitude({ msl: 0, rel: 0 })
+  _altitude = new Altitude({ msl: unit(0, 'm'), rel: 0 })
   _attitude = new Attitude({ roll: 0, pitch: 0, yaw: 0 })
   _communicationDropRate = 0
   _communicationErrors = 0
@@ -81,7 +89,8 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
 
   _messages: MAVLinkMessageDictionary = new Map()
 
-  onMAVLinkMessage = new SignalTyped()
+  onIncomingMAVLinkMessage = new SignalTyped()
+  onOutgoingMAVLinkMessage = new SignalTyped()
   _flying = false
 
   protected currentSystemId = 1
@@ -119,46 +128,12 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
   }
 
   /**
-   * Helper to send long mavlink commands
-   * Each parameter depends of the value specified by the protocol
-   * @param {MavCmd} mav_command
-   * @param {number} param1
-   * @param {number} param2
-   * @param {number} param3
-   * @param {number} param4
-   * @param {number} param5
-   * @param {number} param6
-   * @param {number} param7
-   * @returns {Promise<CommandAck>} A promise that resolves with the command acknowledgment.
+   * Helper to send mavlink commands
+   * @param {Message.CommandLong | Message.CommandInt} commandMessage
+   * @returns {Promise<void>} A promise that resolves with the command acknowledgment.
    */
-  async sendCommandLong(
-    mav_command: MavCmd,
-    param1 = 0,
-    param2 = 0,
-    param3 = 0,
-    param4 = 0,
-    param5 = 0,
-    param6 = 0,
-    param7 = 0
-  ): Promise<void> {
-    const command: Message.CommandLong = {
-      type: MAVLinkType.COMMAND_LONG,
-      param1: param1,
-      param2: param2,
-      param3: param3,
-      param4: param4,
-      param5: param5,
-      param6: param6,
-      param7: param7,
-      command: {
-        type: mav_command,
-      },
-      target_system: this.currentSystemId,
-      target_component: 1,
-      confirmation: 0,
-    }
-
-    sendMavlinkMessage(command)
+  async sendCommand(commandMessage: Message.CommandLong | Message.CommandInt): Promise<void> {
+    sendMavlinkMessage(commandMessage)
 
     // Monitor the acknowledgment of the command and throw an error if it fails or reaches a timeout
     let incomingAckCommand: CommandAck | undefined = undefined
@@ -176,20 +151,22 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
     // Wait for the acknowledgment to be received
     while (!timeoutReached && !receivedCommandAck) {
       await sleep(100)
-      receivedCommandAck = (incomingAckCommand as unknown as CommandAck)?.command.type === mav_command
+      receivedCommandAck = (incomingAckCommand as unknown as CommandAck)?.command.type === commandMessage.command.type
       timeoutReached = differenceInMilliseconds(new Date(), dateCommand) > timeout
     }
 
     this.onCommandAck.remove(ackHandler)
 
     if (!receivedCommandAck) {
-      throw Error(`No acknowledgment received for command '${mav_command}' before timeout (${timeout / 1000}s).`)
+      throw Error(
+        `No acknowledgment received for command '${commandMessage.command.type}' before timeout (${timeout / 1000}s).`
+      )
     }
 
     // We already tested the ack and know that it is of the correct type
     const commandAck = incomingAckCommand as unknown as CommandAck
 
-    console.log('Received command acknowledgment:', commandAck)
+    console.debug('Received command acknowledgment:', commandAck)
 
     const confirmationResults = [MavResult.MAV_RESULT_ACCEPTED, MavResult.MAV_RESULT_IN_PROGRESS]
     if (confirmationResults.includes(commandAck.result.type)) {
@@ -197,6 +174,92 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
     }
 
     throw new Error(`Command failed with result: ${commandAck.result.type}`)
+  }
+
+  /**
+   * Helper to send long mavlink commands
+   * Each parameter depends of the value specified by the protocol
+   * @param {MavCmd} mav_command
+   * @param {number} param1
+   * @param {number} param2
+   * @param {number} param3
+   * @param {number} param4
+   * @param {number} param5
+   * @param {number} param6
+   * @param {number} param7
+   * @returns {Promise<void>} A promise that resolves when the command is acknowledged.
+   */
+  async sendCommandLong(
+    mav_command: MavCmd,
+    param1 = 0,
+    param2 = 0,
+    param3 = 0,
+    param4 = 0,
+    param5 = 0,
+    param6 = 0,
+    param7 = 0
+  ): Promise<void> {
+    const commandMessage: Message.CommandLong = {
+      type: MAVLinkType.COMMAND_LONG,
+      param1: param1,
+      param2: param2,
+      param3: param3,
+      param4: param4,
+      param5: param5,
+      param6: param6,
+      param7: param7,
+      command: {
+        type: mav_command,
+      },
+      target_system: this.currentSystemId,
+      target_component: 1,
+      confirmation: 0,
+    }
+    return this.sendCommand(commandMessage)
+  }
+
+  /**
+   * Helper to send int mavlink commands
+   * Each parameter depends of the value specified by the protocol
+   * @param {MavCmd} mav_command
+   * @param {number} param1
+   * @param {number} param2
+   * @param {number} param3
+   * @param {number} param4
+   * @param {number} x (latitude)
+   * @param {number} y (longitude)
+   * @param {number} z (altitude)
+   * @returns {Promise<void>} A promise that resolves when the command is acknowledged.
+   */
+  async sendCommandInt(
+    mav_command: MavCmd,
+    param1 = 0,
+    param2 = 0,
+    param3 = 0,
+    param4 = 0,
+    x = 0,
+    y = 0,
+    z = 0
+  ): Promise<void> {
+    const commandMessage: Message.CommandInt = {
+      type: MAVLinkType.COMMAND_INT,
+      param1: param1,
+      param2: param2,
+      param3: param3,
+      param4: param4,
+      x: Math.round((x || 0) * 1e7),
+      y: Math.round((y || 0) * 1e7),
+      z: z,
+      command: {
+        type: mav_command,
+      },
+      target_system: this.currentSystemId,
+      target_component: 1,
+      frame: { type: MavFrame.MAV_FRAME_GLOBAL },
+      current: 0,
+      autocontinue: 0,
+    }
+    return this.sendCommand(commandMessage)
   }
 
   registerUsageOfMessageType = (messagePath: string): void => {
@@ -216,10 +279,30 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
   }
 
   /**
+   * Log outgoing messages
+   * @param {Uint8Array} message
+   */
+  onOutgoingMessage(message: Uint8Array): void {
+    const textDecoder = new TextDecoder()
+    let mavlink_message: Package
+    const text_message = textDecoder.decode(message)
+    try {
+      mavlink_message = JSON.parse(text_message) as Package
+      this.onOutgoingMAVLinkMessage.emit_value(mavlink_message.message.type, mavlink_message)
+    } catch (error) {
+      const pattern = /Ok\((\d+)\)/
+      const match = pattern.exec(text_message)
+      if (match) return
+      console.error(`Failed to parse mavlink message: ${text_message}`)
+      return
+    }
+  }
+
+  /**
    *  Decode incoming message
    * @param {Uint8Array} message
    */
-  onMessage(message: Uint8Array): void {
+  onIncomingMessage(message: Uint8Array): void {
     const textDecoder = new TextDecoder()
     let mavlink_message: Package
     const text_message = textDecoder.decode(message)
@@ -237,6 +320,30 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
 
     if (system_id !== this.currentSystemId || component_id !== 1) {
       return
+    }
+
+    const messageType = mavlink_message.message.type
+
+    // Inject variables from the MAVLink messages into the DataLake
+    if (messageType === 'NAMED_VALUE_FLOAT') {
+      // Special handling for NAMED_VALUE_FLOAT messages
+      const name = (mavlink_message.message.name as string[]).join('').replace(/\0/g, '')
+      const path = `${messageType}/${name}`
+      if (getDataLakeVariableInfo(path) === undefined) {
+        createDataLakeVariable(new DataLakeVariable(path, path, 'number'))
+      }
+      setDataLakeVariableData(path, mavlink_message.message.value)
+    } else {
+      // For all other messages, use the flattener
+      const flattened = flattenData(mavlink_message.message)
+      flattened.forEach(({ path, value }) => {
+        if (value === null) return
+        if (typeof value !== 'string' && typeof value !== 'number') return
+        if (getDataLakeVariableInfo(path) === undefined) {
+          createDataLakeVariable(new DataLakeVariable(path, path, typeof value === 'string' ? 'string' : 'number'))
+        }
+        setDataLakeVariableData(path, value)
+      })
     }
 
     // Update our internal messages
@@ -267,7 +374,7 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
      */
     const getDeepVariables = (obj: Record<string, unknown>, acc: string[], baseKey?: string): void => {
       Object.entries(obj).forEach(([k, v]) => {
-        if (v instanceof Object) {
+        if (v instanceof Object && !Array.isArray(v)) {
           let identifier: string | undefined = undefined
           Object.keys(v).forEach((subKey) => {
             if (mavlinkIdentificationKeys.includes(subKey)) {
@@ -295,7 +402,7 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
 
     // TODO: Maybe create a signal class to deal with MAVLink only
     // Where add will use the template argument type to define the lambda argument type
-    this.onMAVLinkMessage.emit_value(mavlink_message.message.type, mavlink_message)
+    this.onIncomingMAVLinkMessage.emit_value(mavlink_message.message.type, mavlink_message)
 
     if (Object.keys(this._usedGenericVariablesdMessagePaths).includes(mavlink_message.message.type)) {
       this._usedGenericVariablesdMessagePaths[mavlink_message.message.type].forEach((path) => {
@@ -334,7 +441,6 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
           command: commandAck.command,
           result: commandAck.result,
           progress: commandAck.progress,
-          resultText: commandAck.resultText,
           targetSystem: commandAck.targetSystem,
           targetComponent: commandAck.targetComponent,
         })
@@ -345,7 +451,7 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
       }
       case MAVLinkType.AHRS2: {
         const ahrsMessage = mavlink_message.message as Message.Ahrs2
-        this._altitude.msl = ahrsMessage.altitude
+        this._altitude.msl = unit(ahrsMessage.altitude, 'm')
         this.onAltitude.emit()
         break
       }
@@ -355,6 +461,28 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
         this._attitude.pitch = attitude.pitch
         this._attitude.yaw = attitude.yaw
         this.onAttitude.emit()
+        break
+      }
+      case MAVLinkType.GIMBAL_DEVICE_ATTITUDE_STATUS: {
+        const attitude = mavlink_message.message as Message.GimbalDeviceAttitudeStatus
+
+        const x = attitude.q[0]
+        const y = attitude.q[1]
+        const z = attitude.q[2]
+        const w = attitude.q[3]
+
+        const sinp = 2 * (w * y - z * x)
+        let pitch
+        if (Math.abs(sinp) >= 1) {
+          pitch = (Math.PI / 2) * Math.sign(sinp) // use 90 degrees if out of range
+        } else {
+          pitch = Math.asin(sinp)
+        }
+        if (!this._availableGenericVariablesdMessagePaths.includes('cameraTiltDeg')) {
+          this._availableGenericVariablesdMessagePaths.push('cameraTiltDeg')
+        }
+        this._genericVariables['cameraTiltDeg'] = degrees(pitch)
+        this.onGenericVariables.emit()
         break
       }
       case MAVLinkType.GLOBAL_POSITION_INT: {
@@ -569,6 +697,7 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
     await this.setMode(landMode as Modes)
     return
   }
+
   /**
    * Goto position
    * @param {number} hold Hold time. (ignored by fixed wing, time to stay at waypoint for rotary wing)
@@ -576,27 +705,25 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
    * @param {number} passRadius 0 to pass through the WP, if > 0 radius to pass by WP. Positive value for clockwise orbit, negative value for counter-clockwise orbit. Allows trajectory control.
    * @param {number} yaw Desired yaw angle at waypoint (rotary wing). NaN to use the current system yaw heading mode (e.g. yaw towards next waypoint, yaw to home, etc.).
    * @param {Coordinates} coordinates
+   * @returns {Promise<void>} A promise that resolves when the command is sent
    */
-  goTo(hold: number, acceptanceRadius: number, passRadius: number, yaw: number, coordinates: Coordinates): void {
-    const gotoMessage: Message.CommandInt = {
-      type: MAVLinkType.COMMAND_INT,
-      target_system: this.currentSystemId,
-      target_component: 1,
-      seq: 0,
-      frame: { type: MavFrame.MAV_FRAME_GLOBAL },
-      command: { type: MavCmd.MAV_CMD_DO_REPOSITION },
-      current: 0,
-      autocontinue: 0,
-      param1: hold,
-      param2: acceptanceRadius,
-      param3: passRadius,
-      param4: yaw,
-      x: Math.round(coordinates.latitude * 1e7),
-      y: Math.round(coordinates.longitude * 1e7),
-      z: coordinates.altitude,
-    }
-
-    sendMavlinkMessage(gotoMessage)
+  async goTo(
+    hold: number,
+    acceptanceRadius: number,
+    passRadius: number,
+    yaw: number,
+    coordinates: Coordinates
+  ): Promise<void> {
+    await this.sendCommandInt(
+      MavCmd.MAV_CMD_DO_REPOSITION,
+      hold,
+      acceptanceRadius,
+      passRadius,
+      yaw,
+      coordinates.latitude,
+      coordinates.longitude,
+      coordinates.altitude
+    )
   }
 
   /**
@@ -971,7 +1098,7 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
     const initTimeDown = new Date().getTime()
     let timeoutReachedDownload = false
     while (!allItemsDownloaded && !timeoutReachedDownload) {
-      await sleep(100)
+      await sleep(10)
       timeoutReachedDownload = new Date().getTime() - initTimeDown > 10000
       loadingCallback((100 * itemToDownload) / itemsCount)
 
@@ -1074,7 +1201,7 @@ export abstract class ArduPilotVehicle<Modes> extends Vehicle.AbstractVehicle<Mo
     let lastSeqRequested = -1
     while (missionAck === undefined && !timeoutReachedUpload) {
       await sleep(10)
-      timeoutReachedUpload = new Date().getTime() - initTimeUpload > 10000
+      timeoutReachedUpload = new Date().getTime() - initTimeUpload > 50000
       const lastMissionItemRequestMessage =
         this._messages.get(MAVLinkType.MISSION_REQUEST) || this._messages.get(MAVLinkType.MISSION_REQUEST_INT)
       if (lastMissionItemRequestMessage === undefined) continue
