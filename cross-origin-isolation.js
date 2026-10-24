@@ -11,7 +11,8 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetch(request).then((response) => {
       const headers = new Headers(response.headers)
-      // credentialless keeps cross-origin resources like map tiles working
+      // credentialless keeps cross-origin resources like map tiles working, but embedded pages
+      // (iframe widgets, BlueOS extensions) that do not send their own COEP will not load
       headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
       headers.set('Cross-Origin-Opener-Policy', 'same-origin')
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
